@@ -29,6 +29,55 @@ dan `fetch`, ia **tidak** bisa dibuka langsung lewat `file://`.
 
 ---
 
+## Deploy ke Vercel
+
+Proyek ini sudah siap deploy: **tanpa dependensi dan tanpa langkah build**, jadi
+Vercel hanya perlu menyajikan berkas statis.
+
+### Cara 1 — Dashboard
+
+1. Push folder ini ke repositori GitHub/GitLab/Bitbucket.
+2. Di Vercel: **Add New → Project**, lalu impor repositori tersebut.
+3. Biarkan **Framework Preset = Other**, **Build Command kosong**, **Output
+   Directory = `.`** (semuanya sudah dikunci oleh `vercel.json`).
+4. **Deploy.**
+
+### Cara 2 — CLI
+
+```bash
+npx vercel          # preview
+npx vercel --prod   # produksi
+```
+
+### Berkas konfigurasi
+
+| Berkas | Fungsi |
+| --- | --- |
+| `vercel.json` | Preset framework, cache, dan header keamanan (termasuk CSP) |
+| `.vercelignore` | Mengecualikan `tools/`, `server.mjs`, dan `README.md` dari deployment |
+| `.gitignore` | Mengecualikan `node_modules/`, `.vercel`, dan artefak lokal |
+
+Catatan penting tentang konfigurasi:
+
+- `"framework": null` secara eksplisit memilih preset **Other**, sehingga Vercel
+  tidak menebak-nebak dan tidak mencoba menjalankan build.
+- `"buildCommand": null` mematikan langkah build; tidak ada `build` script di
+  `package.json` sehingga tidak ada yang dijalankan.
+- **Cache:** `index.html` selalu divalidasi ulang supaya pembaruan langsung
+  terlihat, sedangkan `/assets/*` memakai `s-maxage` panjang. Karena nama berkas
+  **tidak** di-hash, browser sengaja hanya menyimpan 5 menit — cache panjang
+  milik edge Vercel, yang otomatis dibersihkan setiap deployment. Dengan begitu
+  memperbarui `app.js` tidak akan membuat pengguna terjebak versi lama.
+- **CSP:** `vercel.json` memuat Content-Security-Policy yang mengizinkan tepat
+  origin yang dipakai aplikasi (`equran.id` untuk API, `cdn.equran.id` untuk
+  murottal, Google Fonts untuk tipografi). Origin `vercel.live` disertakan agar
+  Vercel Toolbar tetap berfungsi di Preview Deployment — hapus bila tidak perlu.
+  `tools/validate-vercel.mjs` memeriksa ulang daftar ini terhadap kode sumber,
+  jadi menambah layanan eksternal baru tanpa memperbarui CSP akan gagal saat
+  verifikasi.
+
+---
+
 ## Fitur
 
 ### Bacaan
@@ -45,11 +94,28 @@ dan `fetch`, ia **tidak** bisa dibuka langsung lewat `file://`.
 ### Murottal
 - **6 qari**: Misyari Rasyid Al-Afasi, Abdullah Al-Juhany, Abdul-Muhsin Al-Qasim,
   Abdurrahman as-Sudais, Ibrahim Al-Dossari, Yasser Al-Dosari.
-- Dua mode: **murottal penuh per surat** dan **per ayat** dengan lompatan
-  ayat otomatis.
+- Murottal diputar **berurutan ayat demi ayat**, sehingga teks dan bacaan selalu
+  sinkron: ayat yang sedang dibaca disorot dan layar mengikutinya.
+- Menekan **Putar murottal** langsung menggulir ke **ayat pertama** lalu
+  melanjutkan ke ayat-ayat berikutnya; menjeda dan melanjutkan tidak menggulir
+  ulang, jadi posisi baca tidak hilang.
+- Ayat berikutnya **di-prefetch** agar sambungan antar ayat tidak terasa putus.
 - Pemutar melekat di bawah: geser progres, ±5 detik, ulangi ayat, ganti qari.
+- **Ikon putar ↔ jeda** bertukar di ketiga tempat: tombol pemutar, badge nomor
+  ayat yang sedang diputar, dan tombol hero surat. Menekan badge ayat yang sama
+  akan menjeda, menekannya lagi melanjutkan.
+  Status diambil dari elemen `<audio>` itu sendiri (`paused`/`ended`), bukan dari
+  payload event — event `waiting`/`playing` hanya membawa info buffering dan
+  sempat membuat ikon kembali ke "play" di tengah pemutaran.
 - **Media Session API** — tombol putar di lock screen / notifikasi sistem ikut
   berfungsi.
+
+> **Kenapa bukan satu berkas MP3 per surat?** Berkas murottal utuh memang bebas
+> jeda, tetapi satu berkas tidak membawa penanda waktu per ayat, jadi tidak ada
+> cara akurat mengetahui ayat mana yang sedang dibaca — sorotan tidak bisa
+> mengikuti. Memutar per ayat membuat teks dan bacaan tepat sejalan, dan prefetch
+> menutup jeda di sambungannya. Konsekuensinya satu surat panjang seperti
+> Al-Baqarah mengunduh banyak berkas kecil secara berurutan, bukan satu berkas besar.
 - Ayat yang sedang diputar disorot dan digulirkan otomatis ke tengah layar.
 
 ### Tampilan & animasi
@@ -103,7 +169,9 @@ assets/js/player.js        Pembungkus <audio>: transport + Media Session
 assets/js/fx.js            Kanvas bintang, mandala, reveal, toast, formatter
 data/surah.json            Index 114 surat (nama, arti, jumlah ayat, ringkasan)
 server.mjs                 Server statis tanpa dependensi
-tools/                     Skrip build data + suite verifikasi
+vercel.json                Konfigurasi deploy: preset, cache, header keamanan
+.vercelignore / .gitignore Berkas yang tidak ikut deploy / tidak ikut di-commit
+tools/                     Skrip build data + tiga suite verifikasi
 ```
 
 ### Sumber data
@@ -116,27 +184,36 @@ tools/                     Skrip build data + suite verifikasi
 
 Index surat sengaja dibundel supaya beranda tampil seketika dan tetap bisa
 dijelajahi tanpa internet. Teks ayat diambil saat dibutuhkan lalu disimpan di
-`localStorage`. URL murottal dibentuk secara deterministik dari nomor surat/ayat
-(lihat `data.js`), jadi tidak perlu permintaan tambahan.
+`localStorage`. URL murottal dibentuk secara deterministik dari nomor surat dan
+nomor ayat (lihat `data.js`), jadi ayat berikutnya bisa di-prefetch tanpa perlu
+meminta data tambahan.
 
 ---
 
 ## Verifikasi
 
-Dua suite disertakan dan keduanya lulus:
+Tiga suite disertakan dan semuanya lulus:
 
 ```bash
+npm run verify                 # menjalankan ketiganya berurutan
+node tools/validate-vercel.mjs # konfigurasi deploy + cakupan CSP
 node tools/verify.mjs          # integritas selector DOM + lapisan data
 node tools/verify-render.mjs   # menjalankan app.js sungguhan dengan DOM tiruan
 ```
 
+- **`validate-vercel.mjs`** — memeriksa `vercel.json` berisi JSON valid, setiap
+  kunci dikenal Vercel (schema-nya memakai `additionalProperties: false`, jadi
+  satu kunci asing menggagalkan deploy), bentuk `headers[]` benar, dan CSP
+  mengizinkan **setiap** origin eksternal yang benar-benar dirujuk kode sumber.
 - **`verify.mjs`** — memastikan setiap `#id` dan `.class` yang dipakai JavaScript
   benar-benar ada di markup/CSS/template; lalu menguji pembentuk URL audio,
   pemetaan respons API, cache, markah, riwayat, dan seluruh formatter.
 - **`verify-render.mjs`** — mengimpor modul aplikasi apa adanya, menjalankan
-  `boot()`, lalu menavigasi ke `#/surat/112` dan memeriksa markup yang dihasilkan
+  `boot()`, menavigasi ke `#/surat/112`, memeriksa markup yang dihasilkan
   (114 kartu surat, basmalah, teks Arab, terjemahan, nomor Arab-Indic, tombol aksi,
-  navigasi antar-surat) serta memastikan tidak ada error runtime.
+  navigasi antar-surat), lalu **menekan tombol putar/jeda** dan memastikan ikon
+  serta kelas `is-playing` berpindah dengan benar di ketiga lokasi (tombol
+  pemutar, badge ayat, dan tombol hero).
 
 `tools/extract-surah.mjs` adalah skrip sekali jalan untuk membangun
 `data/surah.json`; ia memvalidasi 114 surat dan total 6.236 ayat sebelum menulis.

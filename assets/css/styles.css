@@ -172,6 +172,11 @@ p { text-wrap: pretty; }
 .icon--play, .icon--pause, .icon--moon { fill: currentColor; stroke: none; }
 .icon--pause { display: none; }
 
+/* Play/pause icon pair. Put `.pp` on the element that carries both icons and
+   toggle `.is-playing` on that same element. */
+.pp.is-playing .icon--play { display: none; }
+.pp.is-playing .icon--pause { display: block; }
+
 /* ── 4. Ambient background ─────────────────────────────────────────────── */
 .bg { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
 
@@ -983,17 +988,44 @@ html[data-theme="light"] .surah-card__no span { color: var(--gold-3); }
   flex: none;
 }
 .ayah__no svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-.ayah__no polygon { fill: rgb(53 214 164 / .1); stroke: var(--emerald-2); stroke-width: 1.1; transition: fill .35s var(--ease); }
-.ayah__no span {
+.ayah__no .ayah__no-badge polygon {
+  fill: rgb(53 214 164 / .1);
+  stroke: var(--emerald-2);
+  stroke-width: 1.1;
+  transition: fill .35s var(--ease), stroke .35s var(--ease);
+}
+.ayah__no-num {
   position: relative;
+  grid-area: 1 / 1;
   font-size: .8rem;
   font-weight: 800;
   color: var(--emerald-1);
   font-variant-numeric: tabular-nums;
+  transition: opacity .25s var(--ease);
 }
-html[data-theme="light"] .ayah__no polygon { fill: rgb(11 122 91 / .1); }
-html[data-theme="light"] .ayah__no span { color: var(--emerald-3); }
-.ayah.is-active .ayah__no polygon { fill: rgb(53 214 164 / .28); }
+/* The two glyphs share the badge's single grid cell and swap on hover / playing.
+   Specificity must beat the `.ayah__no svg` rule above that fills the badge. */
+.ayah__no .ayah__no-icon {
+  position: relative;
+  grid-area: 1 / 1;
+  inset: auto;
+  width: 1.05rem; height: 1.05rem;
+  color: var(--emerald-1);
+  display: none;
+}
+html[data-theme="light"] .ayah__no .ayah__no-badge polygon { fill: rgb(11 122 91 / .1); }
+html[data-theme="light"] .ayah__no-num { color: var(--emerald-3); }
+.ayah.is-active .ayah__no .ayah__no-badge polygon { fill: rgb(53 214 164 / .28); }
+
+/* Hover on a non-playing ayah offers "play"; a playing ayah shows "pause". */
+.ayah:not(.is-playing):hover .ayah__no .ayah__no-num,
+.ayah.is-playing .ayah__no .ayah__no-num { opacity: 0; }
+.ayah:not(.is-playing):hover .ayah__no .icon--play { display: block; }
+.ayah.is-playing .ayah__no .icon--pause { display: block; }
+.ayah.is-playing .ayah__no .ayah__no-badge polygon {
+  fill: rgb(53 214 164 / .32);
+  stroke: var(--emerald-1);
+}
 
 .ayah__acts {
   display: flex;
@@ -1338,8 +1370,6 @@ html[data-theme="light"] .ayah__latin { color: var(--emerald-2); }
 }
 .ctrl--play:hover { color: #07231b; background: linear-gradient(140deg, var(--emerald-1), var(--emerald-2)); box-shadow: 0 14px 36px -14px var(--emerald-2); }
 .ctrl--play .icon { width: 1.35rem; height: 1.35rem; }
-.player.is-playing .icon--play { display: none; }
-.player.is-playing .icon--pause { display: block; }
 
 .ctrl.is-on { color: var(--gold-1); background: rgb(217 178 95 / .16); border-color: var(--line); }
 
@@ -1352,6 +1382,34 @@ html[data-theme="light"] .ayah__latin { color: var(--emerald-2); }
   max-width: 12ch;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+
+/* The player is pinned to the bottom edge, so its tooltips must open upwards —
+   below the button they would fall outside the viewport and be clipped. */
+.player [data-tip]::after {
+  top: auto;
+  bottom: calc(100% + 12px);
+  transform: translate(-50%, 6px);
+  z-index: 90;
+}
+.player [data-tip]:hover::after { transform: translate(-50%, 0); }
+.player [data-tip]::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  width: 8px; height: 8px;
+  translate: -50% 0;
+  rotate: 45deg;
+  background: var(--surface-solid);
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s var(--ease);
+  z-index: 90;
+}
+.player [data-tip]:hover::before { opacity: 1; }
+@media (hover: none) { .player [data-tip]::before { display: none; } }
 
 /* ── 19. Drawers ───────────────────────────────────────────────────────── */
 .scrim {

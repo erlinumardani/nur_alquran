@@ -4,7 +4,7 @@
 
 import {
   loadIndex, getSurah, getTafsir, clearCache,
-  RECITERS, getReciter, audioUrlSurah, audioUrlAyah,
+  RECITERS, getReciter, audioUrlAyah,
 } from './data.js';
 
 import {
@@ -32,7 +32,7 @@ const state = {
   surah: null,
   tafsir: null,
   loadingSurah: false,
-  queue: null,          // { mode: 'ayah' | 'surah', nomor, ayah? }
+  queue: null,          // { nomor, ayah } — the ayah chain currently playing
   activeAyah: null,
   abort: null,
 };
@@ -232,6 +232,7 @@ async function openSurah(nomor, ayah = null) {
     state.surah = data;
     renderAyahs(data);
     renderSurahFoot(data);
+    syncPlaybackUI(player.playing);
     if (ayah) scrollToAyah(ayah, { smooth: false });
     else window.scrollTo({ top: 0, behavior: 'auto' });
   } catch (err) {
@@ -266,9 +267,10 @@ function renderSurahHead(s) {
       ${s.desc ? `<p class="surah-hero__desc" id="surahDesc">${esc(s.desc)}</p>
         <button class="surah-hero__more" id="surahMore" type="button">Selengkapnya</button>` : ''}
       <div class="surah-hero__actions">
-        <button class="btn btn--primary" type="button" data-act="play-surah">
-          <svg viewBox="0 0 24 24" class="icon" aria-hidden="true"><path d="M8 5.2v13.6L19 12z"/></svg>
-          Putar murottal
+        <button class="btn btn--primary pp" type="button" data-act="play-surah" id="heroPlay">
+          <svg viewBox="0 0 24 24" class="icon icon--play" aria-hidden="true"><path d="M8 5.2v13.6L19 12z"/></svg>
+          <svg viewBox="0 0 24 24" class="icon icon--pause" aria-hidden="true"><path d="M8 5h3v14H8zM13 5h3v14h-3z"/></svg>
+          <span id="heroPlayLabel">Putar murottal</span>
         </button>
         <button class="btn" type="button" data-act="open-tafsir">
           <svg viewBox="0 0 24 24" class="icon" aria-hidden="true"><path d="M4 5h7a3 3 0 0 1 3 3v11a3 3 0 0 0-3-3H4zM20 5h-7a3 3 0 0 0-3 3v11a3 3 0 0 1 3-3h7z"/></svg>
@@ -304,10 +306,12 @@ function renderAyahs(data) {
   $('#ayahList').innerHTML = bismillah + data.ayat.map((a, i) => `
     <article class="ayah io-reveal" id="ayah-${a.no}" data-ayah="${a.no}" style="--i:${Math.min(i, 12)}">
       <div class="ayah__rail">
-        <button class="ayah__no" type="button" data-act="play-ayah" data-ayah="${a.no}"
-                aria-label="Putar ayat ${a.no}" title="Putar ayat ${a.no}">
-          <svg viewBox="0 0 44 44" aria-hidden="true"><polygon points="${BADGE_44}"/></svg>
-          <span>${toArabicDigits(a.no)}</span>
+        <button class="ayah__no pp" type="button" data-act="play-ayah" data-ayah="${a.no}"
+                aria-label="Putar ayat ${a.no}">
+          <svg class="ayah__no-badge" viewBox="0 0 44 44" aria-hidden="true"><polygon points="${BADGE_44}"/></svg>
+          <span class="ayah__no-num">${toArabicDigits(a.no)}</span>
+          <svg viewBox="0 0 24 24" class="icon ayah__no-icon icon--play" aria-hidden="true"><path d="M8 5.2v13.6L19 12z"/></svg>
+          <svg viewBox="0 0 24 24" class="icon ayah__no-icon icon--pause" aria-hidden="true"><path d="M8 5h3v14H8zM13 5h3v14h-3z"/></svg>
         </button>
         <div class="ayah__acts">
           <button class="act" type="button" data-act="copy" data-ayah="${a.no}" aria-label="Salin ayat ${a.no}" data-tip="Salin">
@@ -530,49 +534,83 @@ async function playAyah(nomor, ayahNo) {
   const ayah = data.ayat.find((a) => a.no === ayahNo);
   const meta = state.index[nomor - 1];
 
-  state.queue = { mode: 'ayah', nomor, ayah: ayahNo };
+  state.queue = { nomor, ayah: ayahNo };
 
   await player.load({
     url: ayah?.audio?.[reciter] || audioUrlAyah(nomor, ayahNo, reciter),
     surah: nomor,
     ayah: ayahNo,
-    mode: 'ayah',
     title: `${meta?.id ?? ''} : ${ayahNo}`,
     sub: `${getReciter(reciter).name} · murottal per ayat`,
   });
 
+  // Focus the ayah being recited, then warm up the next one.
   setActiveAyah(ayahNo);
+  syncPlaybackUI(player.playing);   // the `play` event may have fired before this
+  warmNextAyah(data, ayahNo, reciter);
 }
 
-async function playSurah(nomor) {
-  const data = state.surah?.nomor === nomor ? state.surah : await getSurah(nomor);
-  state.surah = data;
-  const reciter = getPrefs().reciter;
-  const meta = state.index[nomor - 1];
+/**
+ * Play the surah from its first ayah and keep going, so the reader follows the
+ * recitation ayah by ayah.
+ *
+ * A single full-surah MP3 would be gapless, but one continuous file carries no
+ * timing data — there is no reliable way to know which ayah is being recited, so
+ * the highlight could not follow. Chaining the per-ayah murattal keeps the text
+ * and the recitation exactly in step, and prefetching hides the joins.
+ */
+async function startMurattal() {
+  const q = state.queue;
+  if (q?.nomor === state.nomor && player.track) {
+    await player.toggle();   // already streaming this surah → pause / resume
+    return;
+  }
+  await playAyah(state.nomor, 1);
+}
 
-  state.queue = { mode: 'surah', nomor };
-
-  await player.load({
-    url: data.audioFull?.[reciter] || audioUrlSurah(nomor, reciter),
-    surah: nomor,
-    mode: 'surah',
-    title: `Surat ${meta?.id ?? nomor}`,
-    sub: `${getReciter(reciter).name} · murottal penuh`,
-  });
-
-  setActiveAyah(null);
+/** Preload the following ayah so continuous murattal has no audible gap. */
+function warmNextAyah(data, ayahNo, reciter) {
+  if (!getPrefs().autoplayNext || getPrefs().loopAyah) return;
+  const next = data.ayat.find((a) => a.no === ayahNo + 1);
+  if (!next) return;
+  player.prefetch(next.audio?.[reciter] || audioUrlAyah(data.nomor, ayahNo + 1, reciter));
 }
 
 function setActiveAyah(no) {
   state.activeAyah = no;
-  $$('.ayah').forEach((el) => {
-    const on = Number(el.dataset.ayah) === no;
-    el.classList.toggle('is-active', on);
-    if (!on) el.querySelector('.ayah__no')?.removeAttribute('aria-current');
-  });
-  if (no) {
-    $(`.ayah[data-ayah="${no}"] .ayah__no`)?.setAttribute('aria-current', 'true');
-    scrollToAyah(no);
+  $$('.ayah').forEach((el) => el.classList.remove('is-active', 'is-playing'));
+
+  if (!no) return;
+  const card = $(`.ayah[data-ayah="${no}"]`);
+  card?.classList.add('is-active');
+  card?.classList.toggle('is-playing', player.playing);
+  card?.querySelector('.ayah__no')?.setAttribute('aria-current', 'true');
+  scrollToAyah(no);
+}
+
+/** Reflect the transport state on the ayah badge, the player button and the hero button. */
+function syncPlaybackUI(playing) {
+  $('#btnPlay').classList.toggle('is-playing', playing);
+  $('#equalizer').classList.toggle('is-on', playing);
+  $('#player').classList.toggle('is-playing', playing);
+  $('#btnPlay').setAttribute('aria-label', playing ? 'Jeda' : 'Putar');
+
+  if (state.activeAyah) {
+    const card = $(`.ayah[data-ayah="${state.activeAyah}"]`);
+    card?.classList.toggle('is-playing', playing);
+    card?.querySelector('.ayah__no')?.setAttribute(
+      'aria-label',
+      `${playing ? 'Jeda' : 'Putar'} ayat ${state.activeAyah}`,
+    );
+  }
+
+  // The hero button mirrors whichever transport belongs to the surah on screen.
+  const onSurah = state.queue?.nomor === state.nomor && playing;
+  const hero = $('#heroPlay');
+  if (hero) {
+    hero.classList.toggle('is-playing', !!onSurah);
+    const label = $('#heroPlayLabel');
+    if (label) label.textContent = onSurah ? 'Jeda murottal' : 'Putar murottal';
   }
 }
 
@@ -581,14 +619,6 @@ async function stepAyah(delta) {
   if (!q) return;
   const data = state.surah;
   if (!data) return;
-
-  if (q.mode === 'surah') {
-    // In full-surah mode, jumping ayahs restarts per-ayah playback.
-    const current = state.activeAyah ?? 1;
-    const target = Math.min(Math.max(current + delta, 1), data.ayat.length);
-    await playAyah(q.nomor, target);
-    return;
-  }
 
   const target = (q.ayah ?? 1) + delta;
   if (target < 1 || target > data.ayat.length) {
@@ -615,14 +645,14 @@ function bindPlayerUI() {
     $('#playerTitle').textContent = track.title;
     $('#playerSub').textContent = track.sub ?? '';
     $('#playerReciter').textContent = getReciter(getPrefs().reciter).name;
-    $$('.act.is-playing').forEach((el) => el.classList.remove('is-playing'));
-    $(`.ayah[data-ayah="${track.ayah}"] .act[data-act="play-ayah"]`)?.classList.add('is-playing');
+    $$('.ayah').forEach((el) => el.classList.remove('is-playing'));
   });
 
-  player.on('state', ({ playing, buffering }) => {
-    bar.classList.toggle('is-playing', !!playing);
-    $('#equalizer').classList.toggle('is-on', !!playing);
-    $('#btnPlay').setAttribute('aria-label', playing ? 'Jeda' : 'Putar');
+  player.on('state', ({ playing, buffering } = {}) => {
+    // Prefer the element's own state over the event payload: buffering events
+    // also arrive here, and reading a missing `playing` as false would flip the
+    // icon back to "play" while audio is playing.
+    syncPlaybackUI(typeof playing === 'boolean' ? playing : player.playing);
     if (buffering) $('#playerSub').textContent = 'Menyangga…';
     else if (player.track) $('#playerSub').textContent = player.track.sub ?? '';
   });
@@ -637,18 +667,18 @@ function bindPlayerUI() {
   player.on('ended', async () => {
     const q = state.queue;
     if (!q) return;
-    if (q.mode === 'ayah') {
-      if (getPrefs().loopAyah) {
-        await playAyah(q.nomor, q.ayah);
-        return;
-      }
-      const last = state.surah?.ayat.length ?? 0;
-      if (getPrefs().autoplayNext && q.ayah < last) {
-        await playAyah(q.nomor, q.ayah + 1);
-      } else {
-        setActiveAyah(null);
-        toast('Murottal selesai', '۞');
-      }
+
+    if (getPrefs().loopAyah) {
+      await playAyah(q.nomor, q.ayah);
+      return;
+    }
+    // Advancing re-focuses and re-scrolls, so the reader follows the recitation.
+    const last = state.surah?.ayat.length ?? 0;
+    if (getPrefs().autoplayNext && q.ayah < last) {
+      await playAyah(q.nomor, q.ayah + 1);
+    } else {
+      setActiveAyah(null);
+      toast('Murottal selesai', '۞');
     }
   });
 
@@ -734,8 +764,7 @@ function chooseReciter(id) {
 
   const q = state.queue;
   if (!q) return;
-  if (q.mode === 'ayah' && q.ayah) playAyah(q.nomor, q.ayah);
-  else playSurah(q.nomor);
+  playAyah(q.nomor, q.ayah);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -1082,7 +1111,7 @@ function bindGlobalUI() {
   // Reader head actions
   $('#readerHead').addEventListener('click', (e) => {
     const act = e.target.closest('[data-act]')?.dataset.act;
-    if (act === 'play-surah') playSurah(state.nomor);
+    if (act === 'play-surah') startMurattal();
     if (act === 'open-tafsir') openTafsir();
     if (act === 'toggle-bookmark-surah') {
       const a = state.surah?.ayat[0];
@@ -1101,7 +1130,13 @@ function bindGlobalUI() {
     const ayah = state.surah.ayat.find((a) => a.no === no);
     if (!ayah) return;
 
-    if (act === 'play-ayah') playAyah(state.surah.nomor, no);
+    if (act === 'play-ayah') {
+      // Badge acts as a real play/pause toggle for the ayah it belongs to.
+      const isCurrent = state.activeAyah === no && player.track?.ayah === no;
+      if (isCurrent) await player.toggle();
+      else await playAyah(state.surah.nomor, no);
+      return;
+    }
     if (act === 'tafsir') toggleInlineTafsir(no);
     if (act === 'bookmark') toggleBookmarkAyah(no, ayah);
     if (act === 'copy') copyAyah(no, ayah);

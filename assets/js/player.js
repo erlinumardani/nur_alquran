@@ -20,10 +20,16 @@ export class Player {
 
     this.#audio.addEventListener('timeupdate', () => this.#emit('time', this.timeInfo()));
     this.#audio.addEventListener('durationchange', () => this.#emit('time', this.timeInfo()));
-    this.#audio.addEventListener('play', () => this.#emit('state', { playing: true }));
-    this.#audio.addEventListener('pause', () => this.#emit('state', { playing: false }));
-    this.#audio.addEventListener('waiting', () => this.#emit('state', { buffering: true }));
-    this.#audio.addEventListener('playing', () => this.#emit('state', { buffering: false }));
+
+    // Every `state` payload carries the real `playing` value read from the
+    // element. The `waiting`/`playing` events are about buffering and would
+    // otherwise emit `playing: undefined`, which a listener reads as "paused"
+    // and uses to flip the icon back mid-playback.
+    this.#audio.addEventListener('play', () => this.#emit('state', this.#stateInfo()));
+    this.#audio.addEventListener('pause', () => this.#emit('state', this.#stateInfo()));
+    this.#audio.addEventListener('waiting', () => this.#emit('state', this.#stateInfo({ buffering: true })));
+    this.#audio.addEventListener('playing', () => this.#emit('state', this.#stateInfo()));
+
     this.#audio.addEventListener('ended', () => this.#emit('ended', this.#track));
     this.#audio.addEventListener('error', () => {
       // `stop()` clears the source, which can surface as a spurious error event.
@@ -61,11 +67,16 @@ export class Player {
     };
   }
 
+  /** Snapshot of the transport state, always including an accurate `playing`. */
+  #stateInfo(extra = {}) {
+    return { playing: this.playing, buffering: false, ...extra };
+  }
+
   /* ── Transport ───────────────────────────────────────────────────────── */
 
   /**
    * Point the element at a new source and start playing.
-   * @param {{url:string, title:string, sub?:string, surah:number, ayah?:number, mode:'ayah'|'surah'}} track
+   * @param {{url:string, title:string, sub?:string, surah:number, ayah?:number}} track
    */
   async load(track, { autoplay = true } = {}) {
     const sameSource = this.#track?.url === track.url;
@@ -127,6 +138,26 @@ export class Player {
   }
 
   setRate(rate) { this.#audio.playbackRate = rate; }
+
+  /* ── Prefetch ────────────────────────────────────────────────────────── */
+
+  #warm = new Map();
+
+  /**
+   * Warm the HTTP cache for the next ayah so a continuous murattal has no
+   * audible gap at the join. The holding elements stay referenced (a detached
+   * Audio would abort its own download); the oldest are released.
+   */
+  prefetch(url) {
+    if (!url || this.#warm.has(url) || url === this.#track?.url) return;
+    const el = new Audio();
+    el.preload = 'auto';
+    el.src = url;
+    this.#warm.set(url, el);
+    while (this.#warm.size > 3) {
+      this.#warm.delete(this.#warm.keys().next().value);
+    }
+  }
 
   /* ── OS-level media controls ─────────────────────────────────────────── */
 

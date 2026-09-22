@@ -1,0 +1,16 @@
+# Dependencies (the app itself has none)
+node_modules/
+
+# Vercel
+.vercel
+
+# Local verification artifacts
+.chrome-profile/
+.chrome-dom*
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

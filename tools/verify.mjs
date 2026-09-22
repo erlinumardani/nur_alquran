@@ -167,7 +167,7 @@ globalThis.fetch = async (url) => {
   throw new Error(`unexpected fetch: ${url}`);
 };
 
-const { loadIndex, getSurah, audioUrlSurah, audioUrlAyah, RECITERS, getReciter, clearCache } =
+const { loadIndex, getSurah, audioUrlAyah, RECITERS, getReciter, clearCache } =
   await import('../assets/js/data.js');
 const { getPrefs, setPref, toggleBookmark, getBookmarks, isBookmarked, setLastRead, getLastRead, resetPrefs, resolveTheme, applyTheme } =
   await import('../assets/js/store.js');
@@ -176,10 +176,11 @@ const { toArabicDigits, fmtTime, spellNumber, esc, starPolygon } = await import(
 const check = (label, cond, detail = '') => (cond ? pass(label) : fail(`${label}${detail ? ` — ${detail}` : ''}`));
 
 // URL builders
-check('audioUrlSurah pads to 3 digits',
-  audioUrlSurah(2, '05') === 'https://cdn.equran.id/audio-full/Misyari-Rasyid-Al-Afasi/002.mp3',
-  audioUrlSurah(2, '05'));
-check('audioUrlAyah pads surah+ayah', audioUrlAyah(112, 4, '01').endsWith('/112004.mp3'), audioUrlAyah(112, 4, '01'));
+check('audioUrlAyah pads surah+ayah to 3 digits each',
+  audioUrlAyah(2, 255, '05') === 'https://cdn.equran.id/audio-partial/Misyari-Rasyid-Al-Afasi/002255.mp3',
+  audioUrlAyah(2, 255, '05'));
+check('audioUrlAyah stays correct past ayah 9', audioUrlAyah(112, 4, '01').endsWith('/112004.mp3'),
+  audioUrlAyah(112, 4, '01'));
 check('unknown reciter falls back to first', getReciter('99').id === RECITERS[0].id);
 check('all 6 reciters defined', RECITERS.length === 6);
 

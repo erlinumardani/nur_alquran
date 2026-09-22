@@ -29,11 +29,11 @@ export const getReciter = (id) => RECITERS.find((r) => r.id === id) ?? RECITERS[
 
 const pad3 = (n) => String(n).padStart(3, '0');
 
-/** Full-surah murattal URL — the CDN path is deterministic, so no fetch needed. */
-export const audioUrlSurah = (surah, reciterId) =>
-  `${CDN}/audio-full/${getReciter(reciterId).slug}/${pad3(surah)}.mp3`;
-
-/** Per-ayah murattal URL, used when the surah payload has no explicit audio map. */
+/**
+ * Per-ayah murattal URL. The CDN path is deterministic, so a URL can be built
+ * without fetching the surah first — which is what makes prefetching the next
+ * ayah possible.
+ */
 export const audioUrlAyah = (surah, ayah, reciterId) =>
   `${CDN}/audio-partial/${getReciter(reciterId).slug}/${pad3(surah)}${pad3(ayah)}.mp3`;
 
@@ -119,7 +119,6 @@ export async function getSurah(nomor, { signal } = {}) {
     jumlahAyat: data.jumlahAyat,
     tempatTurun: data.tempatTurun,
     deskripsi: data.deskripsi,
-    audioFull: data.audioFull ?? {},
     ayat: data.ayat.map((a) => ({
       no: a.nomorAyat,
       arab: a.teksArab,

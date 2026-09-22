@@ -1,0 +1,11 @@
+# Files that are not part of the deployed static site.
+tools/
+server.mjs
+README.md
+.gitignore
+.vercelignore
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.log

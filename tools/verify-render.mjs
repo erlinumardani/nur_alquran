@@ -24,11 +24,22 @@ const check = (label, cond, detail = '') =>
 
 const registry = new Map();
 
+/** Extract the simple-selector parts the app actually uses. */
+function parseSel(sel) {
+  const classes = [...sel.matchAll(/\.([\w-]+)/g)].map((m) => m[1]);
+  const attrs = [...sel.matchAll(/\[([\w-]+)(?:="([^"]*)")?\]/g)]
+    .map((m) => [m[1].replace(/^data-/, ''), m[2]]);
+  const id = sel.match(/#([\w-]+)/)?.[1] ?? null;
+  return { classes, attrs, id };
+}
+
 function makeEl(tag = 'div') {
   const el = {
     tagName: tag.toUpperCase(),
     _html: '',
     _text: '',
+    _id: null,
+    _attrs: {},
     hidden: false,
     value: '',
     scrollTop: 0,
@@ -57,7 +68,14 @@ function makeEl(tag = 'div') {
     setAttribute(k, v) { this.dataset[`attr:${k}`] = String(v); },
     getAttribute(k) { return this.dataset[`attr:${k}`] ?? null; },
     removeAttribute(k) { delete this.dataset[`attr:${k}`]; },
-    addEventListener() {}, removeEventListener() {},
+    addEventListener(type, fn) {
+      (this._on ??= {})[type] = (this._on[type] ?? []).concat(fn);
+    },
+    removeEventListener() {},
+    /** Test hook: invoke handlers registered on this element. */
+    _fire(type, ev = {}) {
+      (this._on?.[type] ?? []).forEach((fn) => fn({ type, target: this, ...ev }));
+    },
     append(...n) { this.children.push(...n); },
     appendChild(n) { this.children.push(n); return n; },
     insertAdjacentHTML(_pos, h) { this._html += h; },
@@ -82,10 +100,29 @@ globalThis.document = {
   activeElement: null,
   title: '',
   querySelector(sel) {
-    if (!registry.has(sel)) registry.set(sel, makeEl());
+    if (!registry.has(sel)) {
+      const el = makeEl();
+      const { classes, attrs, id } = parseSel(sel);
+      // Seed the stub from the selector so later querySelectorAll calls and
+      // `el.dataset.*` reads behave like the real element would.
+      classes.forEach((c) => el.classList.add(c));
+      el._id = id;
+      for (const [k, v] of attrs) {
+        el._attrs[k] = v;
+        el.dataset[k] = v;
+      }
+      registry.set(sel, el);
+    }
     return registry.get(sel);
   },
-  querySelectorAll: () => [],
+  querySelectorAll(sel) {
+    const want = parseSel(sel);
+    return [...registry.values()].filter((el) => {
+      if (want.id && el._id !== want.id) return false;
+      if (!want.classes.every((c) => el.classList.contains(c))) return false;
+      return want.attrs.every(([k, v]) => (v === undefined ? k in el._attrs : el._attrs[k] === v));
+    });
+  },
   getElementById(id) { return this.querySelector(`#${id}`); },
   createElement: (t) => makeEl(t),
   addEventListener(type, fn) {
@@ -96,10 +133,11 @@ globalThis.document = {
 };
 globalThis.document.documentElement.dataset = {};
 
+const scrollCalls = [];
 globalThis.window = {
   innerHeight: 900,
   scrollY: 0,
-  scrollTo() {},
+  scrollTo(arg) { scrollCalls.push(arg); },
   addEventListener(type, fn) {
     if (!listeners.has(type)) listeners.set(type, []);
     listeners.get(type).push(fn);
@@ -114,13 +152,43 @@ globalThis.requestAnimationFrame = () => 0;
 globalThis.cancelAnimationFrame = () => {};
 globalThis.ResizeObserver = class { observe() {} disconnect() {} };
 
+/** Every Audio element created, so prefetching is observable. */
+const audioInstances = [];
+
+/** Audio element stub that actually raises the events the Player listens for. */
 class AudioStub {
-  constructor() { this.preload = ''; this.currentTime = 0; this.duration = 0; this.paused = true; this.src = ''; }
-  addEventListener() {}
-  play() { this.paused = false; return Promise.resolve(); }
-  pause() { this.paused = true; }
+  constructor() {
+    this.preload = '';
+    this.currentTime = 0;
+    this.duration = 180;
+    this.paused = true;
+    this.ended = false;
+    this.src = '';
+    this._on = {};
+    audioInstances.push(this);
+  }
+  addEventListener(type, fn) { (this._on[type] ??= []).push(fn); }
+  _fire(type) { (this._on[type] ?? []).forEach((fn) => fn({ type })); }
+  /** Simulate the media reaching its end, as the browser would. */
+  fireEnded() { this.ended = true; this.paused = true; this._fire('ended'); }
+  /**
+   * Mirrors a real browser starting playback, which fires:
+   *   play → waiting (buffering) → playing (resumed)
+   * The trailing buffering events carry no notion of "playing" and used to
+   * reset the play/pause icon mid-playback.
+   */
+  play() {
+    this.paused = false;
+    this.ended = false;
+    this._fire('play');
+    this._fire('waiting');
+    this._fire('playing');
+    return Promise.resolve();
+  }
+  pause() { if (this.paused) return; this.paused = true; this._fire('pause'); }
   load() {}
-  removeAttribute() {}
+  removeAttribute(name) { if (name === 'src') this.src = ''; }
+  setAttribute() {}
 }
 globalThis.Audio = AudioStub;
 
@@ -254,6 +322,164 @@ check('prev/next surah navigation rendered', foot.includes('#/surat/111') && foo
 check('document title follows the route', document.title.includes('Al-Ikhlas'), document.title);
 check('reader toolbar revealed', el('#readerToolbar').hidden === false);
 check('loading overlay hidden after render', el('#loader').hidden === true);
+
+/* ── Play / pause transport ────────────────────────────────────────────── */
+
+const app = globalThis.window.__nur;
+check('app internals exposed for testing', !!app?.player && !!app?.state);
+
+/** Simulate a click on a delegated container, as the browser would. */
+const tap = (containerSel, dataset) =>
+  document.querySelector(containerSel)._fire('click', {
+    target: { closest: () => ({ dataset }) },
+  });
+
+const btnPlay = el('#btnPlay');
+const heroPlay = el('#heroPlay');
+const heroLabel = el('#heroPlayLabel');
+const card1 = () => document.querySelector('.ayah[data-ayah="1"]');
+
+// Static markup: both glyphs must be present for the swap to be possible.
+const indexHtml = readFileSync(resolve(ROOT, 'index.html'), 'utf8');
+check('player button ships play + pause glyphs',
+  /id="btnPlay"[\s\S]{0,400}?icon--play[\s\S]{0,200}?icon--pause/.test(indexHtml));
+check('ayah badge ships play + pause glyphs',
+  /class="ayah__no pp"[\s\S]*?icon--play[\s\S]*?icon--pause/.test(ayahs));
+check('hero button ships play + pause glyphs and a label',
+  /id="heroPlay"[\s\S]*?icon--play[\s\S]*?icon--pause[\s\S]*?id="heroPlayLabel"/.test(head));
+
+// 1. Play an ayah.
+tap('#ayahList', { act: 'play-ayah', ayah: '1' });
+const started = await waitFor(() => app.state.activeAyah === 1 && app.player.playing);
+check('clicking an ayah badge starts playback', started);
+
+check('player button switches to the pause glyph', btnPlay.classList.contains('is-playing'));
+check('ayah badge switches to the pause glyph', card1().classList.contains('is-playing'));
+// Playing one ayah is playing this surah's recitation, so the hero button
+// consistently offers to pause it (there is only one audio mode now).
+check('hero button also offers to pause while an ayah plays',
+  heroPlay.classList.contains('is-playing'));
+
+// 2. Click the same ayah again → pause.
+tap('#ayahList', { act: 'play-ayah', ayah: '1' });
+const paused = await waitFor(() => !app.player.playing);
+check('clicking the same ayah again pauses', paused);
+check('player button returns to the play glyph', !btnPlay.classList.contains('is-playing'));
+check('ayah badge returns to the play glyph', !card1().classList.contains('is-playing'));
+
+// 3. Click again → resume (not restart).
+const t0 = app.player.track;
+tap('#ayahList', { act: 'play-ayah', ayah: '1' });
+check('clicking again resumes the same track',
+  await waitFor(() => app.player.playing) && app.player.track === t0);
+
+// 4. Player transport button toggles both ways.
+tap('#btnPlay', {});
+check('player button pauses', await waitFor(() => !app.player.playing));
+check('play/pause class cleared on the button', !btnPlay.classList.contains('is-playing'));
+tap('#btnPlay', {});
+check('player button resumes', await waitFor(() => app.player.playing));
+check('play/pause class applied on the button', btnPlay.classList.contains('is-playing'));
+
+// 4b. Regression: starting playback emits play → waiting → playing. The trailing
+//     buffering events must not flip the icon back to "play" while audio runs.
+check('a play burst leaves the button showing the pause icon',
+  app.player.playing === true && btnPlay.classList.contains('is-playing'));
+check('pause/resume cycles keep the pause icon (full browser event order)',
+  await (async () => {
+    for (let i = 0; i < 3; i += 1) {
+      tap('#btnPlay', {});
+      if (!await waitFor(() => !app.player.playing)) return false;
+      tap('#btnPlay', {});
+      if (!await waitFor(() => app.player.playing)) return false;
+      if (!btnPlay.classList.contains('is-playing')) return false;
+      if (!card1().classList.contains('is-playing')) return false;
+    }
+    return true;
+  })());
+
+// 4c. The same burst must not desync the ayah badge.
+tap('#ayahList', { act: 'play-ayah', ayah: '2' });
+await waitFor(() => app.state.activeAyah === 2 && app.player.playing);
+check('second ayah badge shows the pause icon',
+  document.querySelector('.ayah[data-ayah="2"]').classList.contains('is-playing'));
+check('first ayah badge released the pause icon',
+  !card1().classList.contains('is-playing'));
+
+// 5. The murattal button focuses ayah 1 and then follows the recitation.
+const cur = (n) => document.querySelector(`.ayah[data-ayah="${n}"]`);
+const focused = () => app.state.activeAyah;
+
+/** The same reset the player's close button performs, to start this block clean. */
+function resetTransport() {
+  app.player.stop();
+  app.state.queue = null;
+  app.state.activeAyah = null;
+  scrollCalls.length = 0;
+}
+
+resetTransport();
+tap('#readerHead', { act: 'play-surah' });
+const heroOn = await waitFor(() => focused() === 1 && app.player.playing);
+check('hero button starts the murattal at the first ayah', heroOn);
+check('starting the murattal scrolls the view', scrollCalls.length > 0,
+  `${scrollCalls.length} scroll call(s)`);
+check('the first ayah is highlighted', cur(1).classList.contains('is-active'));
+check('the first ayah shows the pause glyph', cur(1).classList.contains('is-playing'));
+check('hero button switches to the pause glyph', heroPlay.classList.contains('is-playing'));
+check('hero button label becomes "Jeda murottal"',
+  heroLabel.textContent === 'Jeda murottal', heroLabel.textContent);
+const transport = () => audioInstances[0];
+check('the next ayah is prefetched', audioInstances.some((a) => a.src.endsWith('/112002.mp3')),
+  audioInstances.map((a) => a.src).join(' | '));
+
+// Finishing ayah 1 must advance, re-focus and re-scroll to ayah 2.
+scrollCalls.length = 0;
+transport().fireEnded();
+check('the recitation advances to the next ayah',
+  await waitFor(() => focused() === 2 && app.player.playing));
+check('advancing scrolls the view again', scrollCalls.length > 0);
+check('ayah 2 is highlighted', cur(2).classList.contains('is-active'));
+check('ayah 2 shows the pause glyph', cur(2).classList.contains('is-playing'));
+check('ayah 1 released the highlight',
+  !cur(1).classList.contains('is-active') && !cur(1).classList.contains('is-playing'));
+
+// And it keeps going, all the way to the last ayah, then stops cleanly.
+for (const n of [3, 4]) {
+  transport().fireEnded();
+  if (!await waitFor(() => focused() === n)) break;
+}
+check('the chain reaches the last ayah', focused() === 4, String(focused()));
+transport().fireEnded();
+check('the chain stops at the end of the surah', await waitFor(() => !app.player.playing));
+check('the highlight clears when the surah finishes', focused() === null, String(focused()));
+
+// Pausing and resuming must not yank the reader back to the top.
+scrollCalls.length = 0;
+tap('#readerHead', { act: 'play-surah' });
+await waitFor(() => focused() === 1 && app.player.playing);
+scrollCalls.length = 0;
+tap('#readerHead', { act: 'play-surah' });
+check('hero button pauses the murattal', await waitFor(() => !app.player.playing));
+check('pausing does not scroll again', scrollCalls.length === 0);
+tap('#readerHead', { act: 'play-surah' });
+check('hero button resumes the murattal', await waitFor(() => app.player.playing));
+check('resuming does not scroll again', scrollCalls.length === 0);
+check('resuming keeps the pause glyph on the hero button', heroPlay.classList.contains('is-playing'));
+
+tap('#readerHead', { act: 'play-surah' });
+check('hero button returns to the play glyph when paused',
+  await waitFor(() => !app.player.playing) && !heroPlay.classList.contains('is-playing'));
+check('hero button label returns to "Putar murottal"',
+  heroLabel.textContent === 'Putar murottal', heroLabel.textContent);
+
+// 5b. Tapping ayah 1's badge while the murattal runs jumps the chain there.
+tap('#readerHead', { act: 'play-surah' });
+await waitFor(() => app.player.playing);
+tap('#ayahList', { act: 'play-ayah', ayah: '3' });
+check('tapping an ayah badge jumps the chain to that ayah',
+  await waitFor(() => focused() === 3 && app.player.playing));
+check('the jumped-to ayah owns the pause glyph', cur(3).classList.contains('is-playing'));
 
 /* ── Bookmarks view ────────────────────────────────────────────────────── */
 
