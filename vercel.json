@@ -45,7 +45,7 @@
         { "key": "Permissions-Policy", "value": "geolocation=(), microphone=(), camera=(), payment=()" },
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'self'; script-src 'self' https://vercel.live; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: https://vercel.live; media-src https://cdn.equran.id; connect-src 'self' https://equran.id https://vercel.live wss://ws.vercel.live; frame-src https://vercel.live"
+          "value": "default-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'self'; script-src 'self' https://vercel.live; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: https://vercel.live; media-src https://cdn.equran.id; connect-src 'self' https://equran.id https://api.quran.com https://vercel.live wss://ws.vercel.live; frame-src https://vercel.live"
         }
       ]
     }

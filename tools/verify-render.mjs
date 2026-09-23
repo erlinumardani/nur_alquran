@@ -74,12 +74,25 @@ function makeEl(tag = 'div') {
     removeEventListener() {},
     /** Test hook: invoke handlers registered on this element. */
     _fire(type, ev = {}) {
-      (this._on?.[type] ?? []).forEach((fn) => fn({ type, target: this, ...ev }));
+      const event = {
+        type,
+        target: this,
+        currentTarget: this,
+        defaultPrevented: false,
+        preventDefault() { this.defaultPrevented = true; },
+        stopPropagation() {},
+        ...ev,
+      };
+      (this._on?.[type] ?? []).forEach((fn) => fn(event));
+      return event;
     },
     append(...n) { this.children.push(...n); },
     appendChild(n) { this.children.push(n); return n; },
     insertAdjacentHTML(_pos, h) { this._html += h; },
-    querySelector: () => makeEl(),
+    // Cached per selector so repeated lookups return the same node, which is what
+    // makes direct innerHTML updates on a child observable to the test.
+    _q: {},
+    querySelector(sel) { return (this._q[sel] ??= makeEl()); },
     querySelectorAll: () => [],
     closest: () => null,
     focus() {}, blur() {}, click() {},
@@ -147,7 +160,18 @@ globalThis.window = {
   IntersectionObserver: class { observe() {} unobserve() {} disconnect() {} },
 };
 globalThis.IntersectionObserver = globalThis.window.IntersectionObserver;
-globalThis.location = { hash: '' };
+// Assigning location.hash in a browser fires hashchange; mirror that so the
+// router is exercised by navigation the way it actually happens.
+let currentHash = '';
+globalThis.location = {
+  get hash() { return currentHash; },
+  set hash(next) {
+    const value = String(next);
+    if (value === currentHash) return;
+    currentHash = value;
+    emit('hashchange');
+  },
+};
 globalThis.requestAnimationFrame = () => 0;
 globalThis.cancelAnimationFrame = () => {};
 globalThis.ResizeObserver = class { observe() {} disconnect() {} };
@@ -203,10 +227,30 @@ globalThis.localStorage = {
 
 const indexJSON = readFileSync(resolve(ROOT, 'data/surah.json'), 'utf8');
 
+/** Flipped by the tajwid tests to simulate the quran.com endpoint being down. */
+let tajwidShouldFail = false;
+
+/** Uthmani text with tajwid rules embedded, shaped like the real endpoint. */
+function tajwidVerses(chapter) {
+  const v = (n, text) => ({ verse_key: `${chapter}:${n}`, text_uthmani_tajweed: text });
+  if (chapter !== 112) return [v(1, '\u0627 <span class=end>\u0661</span>')];
+  return [
+    v(1, 'قُلْ هُوَ <tajweed class=ham_wasl>\u0671</tajweed>للَّهُ أَحَ<tajweed class=qalaqah>د</tajweed>ٌ <span class=end>\u0661</span>'),
+    v(2, '\u0671للَّهُ <tajweed class=ghunnah>نّ</tajweed>َ <span class=end>\u0662</span>'),
+    v(3, 'لَمْ يَلِ<tajweed class=qalaqah>دْ</tajweed> <span class=end>\u0663</span>'),
+    v(4, '\u0648\u0644\u0645 <tajweed class=madda_normal>\u06EA</tajweed> <span class=end>\u0664</span>'),
+  ];
+}
+
 globalThis.fetch = async (url) => {
   const u = String(url);
   if (u.includes('data/surah.json')) {
     return { ok: true, status: 200, json: async () => JSON.parse(indexJSON) };
+  }
+  if (u.includes('api.quran.com')) {
+    if (tajwidShouldFail) return { ok: false, status: 503, json: async () => ({}) };
+    const chapter = Number(new URL(u).searchParams.get('chapter_number'));
+    return { ok: true, status: 200, json: async () => ({ verses: tajwidVerses(chapter) }) };
   }
   const nomor = Number(u.split('/').pop());
   return {
@@ -293,7 +337,6 @@ check('settings lists all reciters', (settings.match(/<option value="/g) ?? []).
 /* ── Reader view ───────────────────────────────────────────────────────── */
 
 location.hash = '#/surat/112';
-emit('hashchange');
 
 const ayahReady = await waitFor(() => el('#ayahList')._html.includes('data-ayah="4"'));
 check('navigating to #/surat/112 renders the ayah list', ayahReady);
@@ -308,13 +351,50 @@ const ayahs = el('#ayahList')._html;
 const ayahCount = (ayahs.match(/class="ayah io-reveal"/g) ?? []).length;
 check('all 4 ayahs rendered', ayahCount === 4, `got ${ayahCount}`);
 check('basmalah shown for surah 112', ayahs.includes('class="bismillah"'));
-check('Arabic text present', ayahs.includes('قُلْ هُوَ اللّٰهُ اَحَدٌ'));
+check('Uthmani Arabic from the tajwid source is used', ayahs.includes('أَحَ<tajweed class="qalaqah">د</tajweed>'));
+check('tajwid rules are emitted with whitelisted quoted classes',
+  /<tajweed class="(qalaqah|ghunnah|ham_wasl|madda_normal)">/.test(ayahs));
+// Scope this to the Arabic blocks: the ayah card legitimately contains spans of
+// its own (badge number, end mark), so a whole-list check would be meaningless.
+/** Raw inner markup of every Arabic block in a rendered list. */
+const arabicNodes = (html) =>
+  [...html.matchAll(/<p class="ayah__arab"[^>]*>([\s\S]*?)<\/p>/g)].map((m) => m[1]);
+/** The same blocks reduced to their letters, markup removed. */
+const arabicBlocks = (html) =>
+  arabicNodes(html).map((b) => b.replace(/<span class="end-mark">[^<]*<\/span>/g, '')
+    .replace(/<[^>]*>/g, '').trim());
+
+const arabNodes = arabicNodes(ayahs);
+const arabBlocks = arabicBlocks(ayahs);check('each ayah has exactly one Arabic block', arabBlocks.length === 4, `${arabBlocks.length}`);
+// Everything except the whitelisted tajweed wrappers and our own end mark must be
+// inert text — in particular the API's unquoted `<span class=end>` must be gone.
+const foreignMarkup = (b) => b
+  .replace(/<tajweed class="[a-z_]+">/g, '')
+  .replace(/<\/tajweed>/g, '')
+  .replace(/<span class="end-mark">[^<]*<\/span>/g, '');
+check('the reader still draws its own end mark',
+  arabNodes.every((b) => b.includes('class="end-mark"')));
+check('no stray API markup leaks into the Arabic text',
+  arabNodes.every((b) => !/[<>]/.test(foreignMarkup(b))),
+  arabNodes.map(foreignMarkup).find((b) => /[<>]/.test(b)) ?? '');
+check('the API end span is not duplicated',
+  !/class=end(?!=)/.test(ayahs));
 check('Indonesian translation present', ayahs.includes('Allah tempat meminta segala sesuatu.'));
 check('transliteration present', ayahs.includes('Qul huwallāhu aḥad(un).'));
 check('ayah numbers use Arabic-Indic digits', ayahs.includes('>١<') && ayahs.includes('>٤<'));
 check('per-ayah actions wired', ['play-ayah', 'copy', 'bookmark', 'tafsir']
   .every((a) => ayahs.includes(`data-act="${a}"`)));
 check('arabic block is marked RTL', ayahs.includes('lang="ar" dir="rtl"'));
+
+const legend = el('#tajwidLegend')._html;
+check('tajwid legend is rendered', legend.includes('tajwid-legend'));
+check('legend lists only colour families present',
+  legend.includes('Dengung') && legend.includes('Qalqalah') && !legend.includes('Mad lazim'));
+check('legend names the Indonesian rules',
+  legend.includes('Ikhfa') || legend.includes('Idgam') || legend.includes('Ghunnah'));
+check('legend uses the same colour groups as the CSS',
+  legend.includes('tj-g-qalqalah') && legend.includes('tj-g-ghunnah'));
+check('colouring mode is exposed to CSS', document.documentElement.dataset.tajwid === 'on');
 
 const foot = el('#readerFoot')._html;
 check('prev/next surah navigation rendered', foot.includes('#/surat/111') && foot.includes('#/surat/113'));
@@ -481,10 +561,173 @@ check('tapping an ayah badge jumps the chain to that ayah',
   await waitFor(() => focused() === 3 && app.player.playing));
 check('the jumped-to ayah owns the pause glyph', cur(3).classList.contains('is-playing'));
 
+/* ── Tajwid colouring ──────────────────────────────────────────────────── */
+
+/**
+ * The live Arabic node for an ayah. Toggling colours rewrites these in place
+ * rather than re-rendering the list, so the test has to read the same node the
+ * app wrote to.
+ */
+const arabNode = (n) => document.querySelector(`.ayah[data-ayah="${n}"]`).querySelector('.ayah__arab');
+/** Letters only, so assertions never depend on how Arabic is encoded here. */
+const letters = (n) => arabNode(n)._html
+  .replace(/<span class="end-mark">[^<]*<\/span>/g, '')
+  .replace(/<[^>]*>/g, '')
+  .trim();
+
+tap('#btnToggleTajwid', {});
+check('the toolbar toggle turns colouring off',
+  await waitFor(() => app.getPrefs().tajwid === false));
+check('colour markup is removed from the ayah', !/<tajweed/.test(arabNode(1)._html), arabNode(1)._html);
+check('the CSS mode flag follows the toggle', document.documentElement.dataset.tajwid === 'off');
+check('the legend is hidden when colouring is off', el('#tajwidLegend')._html === '');
+check('the plain text is still the Uthmani edition, not the translation source',
+  letters(1).length > 0);
+
+tap('#btnToggleTajwid', {});
+check('the toolbar toggle turns colouring back on',
+  await waitFor(() => app.getPrefs().tajwid === true));
+check('colour markup returns to the ayah', /<tajweed class="qalaqah"/.test(arabNode(1)._html),
+  arabNode(1)._html);
+check('the legend returns', el('#tajwidLegend')._html.includes('tajwid-legend'));
+
+// The decisive property: toggling colour must never change the letters themselves.
+const colouredLetters = letters(1);
+tap('#btnToggleTajwid', {});
+await waitFor(() => app.getPrefs().tajwid === false);
+check('only the markup changes, never the letters',
+  letters(1) === colouredLetters, `${letters(1)} vs ${colouredLetters}`);
+tap('#btnToggleTajwid', {});
+await waitFor(() => app.getPrefs().tajwid === true);
+
+// Settings drawer switch drives the same preference.
+el('#settingsBody')._fire('click', {
+  target: { closest: (sel) => (sel === '[data-toggle]' ? { dataset: { toggle: 'tajwid' } } : null) },
+});
+check('the settings switch turns colouring off',
+  await waitFor(() => app.getPrefs().tajwid === false));
+check('the toolbar button reflects the settings change',
+  !el('#btnToggleTajwid').classList.contains('is-on'));
+tap('#btnToggleTajwid', {});
+await waitFor(() => app.getPrefs().tajwid === true);
+
+/* ── Fallback when the tajwid API is unavailable ───────────────────────── */
+
+tajwidShouldFail = true;
+location.hash = '#/surat/113';
+const fellBack = await waitFor(() => app.state.surah?.nomor === 113 && app.state.tajwid === null
+  && el('#ayahList')._html.includes('ayah__arab'));
+check('the reader still renders when the tajwid API fails', fellBack);
+check('the fallback text has no tajwid markup', !/<tajweed/.test(el('#ayahList')._html));
+check('the fallback text is present and non-empty',
+  arabicBlocks(el('#ayahList')._html).length === 4
+  && arabicBlocks(el('#ayahList')._html).every((t) => t.length > 0),
+  `${arabicBlocks(el('#ayahList')._html).length} block(s)`);
+check('the legend stays hidden in fallback mode', el('#tajwidLegend')._html === '');
+
+// Recovery: once the API answers again the coloured text comes back.
+tajwidShouldFail = false;
+location.hash = '#/surat/112';
+check('the coloured text returns once the API recovers',
+  await waitFor(() => app.state.tajwid?.nomor === 112 && /<tajweed/.test(arabNode(1)._html)));
+
+/* ── Jump to ayah ──────────────────────────────────────────────────────── */
+
+// Back on surah 112 with four ayahs, freshly rendered above.
+const chip = (n) => document.querySelector(`.ayah-chip[data-jump="${n}"]`);
+const gridHtml = () => el('#ayahGrid')._html;
+
+location.hash = '#/surat/112';
+await waitFor(() => app.state.renderedSurah === 112);
+
+tap('#btnAyahJump', {});
+check('the toolbar opens the ayah picker', document.querySelector('#drawerAyah').classList.contains('is-open'));
+check('the picker titles the current surah',
+  el('#ayahJumpSub')._text.includes('Al-Ikhlas') && el('#ayahJumpSub')._text.includes('4 ayat'),
+  el('#ayahJumpSub')._text);
+check('the picker lists one chip per ayah', (gridHtml().match(/ayah-chip/g) ?? []).length === 4,
+  gridHtml());
+check('the input is bounded by the ayah count', el('#ayahJumpInput').max === '4');
+
+// The shim cannot parse innerHTML, so a chip only exists once it has been looked
+// up at least once. Register them so markAyahGridCurrent has nodes to toggle.
+[1, 2, 3, 4].forEach((n) => chip(n));
+
+// Picking a chip navigates through the hash, so the URL stays shareable.
+scrollCalls.length = 0;
+el('#ayahGrid')._fire('click', { target: { closest: () => ({ dataset: { jump: '3' } }) } });
+check('picking a chip navigates to that ayah',
+  await waitFor(() => app.state.activeAyah === null && location.hash === '#/surat/112/3'),
+  location.hash);
+check('jumping scrolls the reader', scrollCalls.length > 0);
+check('the picker closes after jumping',
+  !document.querySelector('#drawerAyah').classList.contains('is-open'));
+check('the landed ayah is flashed', document.querySelector('.ayah[data-ayah="3"]').classList.contains('is-flash'));
+check('the landed chip is marked current', chip(3).classList.contains('is-current'));
+
+// Typing a number works the same way.
+tap('#btnAyahJump', {});
+el('#ayahJumpInput').value = '2';
+el('#ayahJumpForm')._fire('submit', {});
+check('typing a number jumps', await waitFor(() => location.hash === '#/surat/112/2'), location.hash);
+
+// Out-of-range input is clamped rather than silently doing nothing.
+const before = location.hash;
+tap('#btnAyahJump', {});
+el('#ayahJumpInput').value = '99';
+el('#ayahJumpForm')._fire('submit', {});
+check('an out-of-range ayah is refused', location.hash === before, location.hash);
+
+// Jumping within the same surah must not rebuild the list.
+tap('#btnAyahJump', {});
+el('#ayahJumpInput').value = '4';
+const listHtmlBefore = el('#ayahList')._html;
+el('#ayahJumpForm')._fire('submit', {});
+await waitFor(() => location.hash === '#/surat/112/4');
+check('a same-surah jump keeps the rendered list intact',
+  el('#ayahList')._html === listHtmlBefore);
+check('a same-surah jump does not re-fetch the surah',
+  app.state.renderedSurah === 112 && app.state.surah?.nomor === 112);
+
+// The palette accepts a verse reference: "2:255".
+location.hash = '#/';
+el('#cmdPalette').hidden = false;
+el('#cmdInput').value = '2:255';
+el('#cmdInput')._fire('input', {});
+const cmdHtml = el('#cmdResults')._html;
+check('the palette offers a verse jump for "2:255"',
+  cmdHtml.includes('data-goto="2:255"') && cmdHtml.includes('ayat 255'), cmdHtml.slice(0, 120));
+check('the verse hit is the first result (the primary action)',
+  cmdHtml.trimStart().startsWith('<button class="cmd__item cmd__item--goto"'),
+  cmdHtml.slice(0, 90));
+check('a verse reference suppresses unrelated surah noise',
+  (cmdHtml.match(/data-nomor=/g) ?? []).length === 0);
+
+// An impossible reference falls back to normal search instead of a dead action.
+el('#cmdInput').value = '2:999';
+el('#cmdInput')._fire('input', {});
+check('an impossible verse reference is not offered',
+  !el('#cmdResults')._html.includes('data-goto='), el('#cmdResults')._html.slice(0, 120));
+
+el('#cmdInput').value = '36:1';
+el('#cmdInput')._fire('input', {});
+check('the palette recognises a second reference', el('#cmdResults')._html.includes('data-goto="36:1"'));
+
+/* ── The jump also works across surahs ─────────────────────────────────── */
+
+// Clear any flash left from the earlier jumps so this assertion is not vacuous.
+document.querySelector('.ayah[data-ayah="3"]').classList.remove('is-flash');
+
+location.hash = '#/surat/36/3';
+check('a cross-surah jump renders the target surah',
+  await waitFor(() => app.state.renderedSurah === 36 && app.state.nomor === 36),
+  `renderedSurah=${app.state.renderedSurah}`);
+check('the cross-surah jump flashes the landed ayah',
+  document.querySelector('.ayah[data-ayah="3"]').classList.contains('is-flash'));
+
 /* ── Bookmarks view ────────────────────────────────────────────────────── */
 
 location.hash = '#/markah';
-emit('hashchange');
 await new Promise((r) => setTimeout(r, 60));
 check('bookmarks view renders empty state', el('#bmList')._html.includes('empty-note'));
 

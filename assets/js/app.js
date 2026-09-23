@@ -3,8 +3,8 @@
  */
 
 import {
-  loadIndex, getSurah, getTafsir, clearCache,
-  RECITERS, getReciter, audioUrlAyah,
+  loadIndex, getSurah, getTafsir, getTajwid, clearCache,
+  RECITERS, getReciter, audioUrlAyah, TAJWID_RULES, TAJWID_GROUPS,
 } from './data.js';
 
 import {
@@ -31,6 +31,8 @@ const state = {
   nomor: null,
   surah: null,
   tafsir: null,
+  tajwid: null,         // Uthmani text + tajwid rules, or null when unavailable
+  renderedSurah: null,  // which surah the ayah list currently shows
   loadingSurah: false,
   queue: null,          // { nomor, ayah } — the ayah chain currently playing
   activeAyah: null,
@@ -57,6 +59,7 @@ const BADGE_44 = starPolygon(44, 8, 0.46, 0.2, 22.5);
 
 async function boot() {
   applyTheme();
+  applyTajwidMode();
   buildMandala($('#mandala'));
   starfield = initStarfield();
   renderHijriDate($('#hijriText'));
@@ -83,7 +86,6 @@ async function boot() {
     renderSettings();
     renderBookmarks();
   });
-
   route();
 }
 
@@ -204,6 +206,18 @@ async function openSurah(nomor, ayah = null) {
   if (!state.index.length) await loadIndex().then((d) => { state.index = d; }).catch(() => {});
 
   showView('view-reader');
+
+  // Already showing this surah? Just move the reader. Rebuilding the list would
+  // throw away the scroll position, reset the header, and drop the highlight on
+  // whichever ayah is playing.
+  if (state.renderedSurah === nomor) {
+    state.nomor = nomor;
+    document.title = `${state.index[nomor - 1]?.id ?? `Surat ${nomor}`} — Nūr al-Qur\u2019ān`;
+    if (ayah) jumpToAyah(ayah, { smooth: false });
+    else window.scrollTo({ top: 0, behavior: 'auto' });
+    return;
+  }
+
   state.nomor = nomor;
   state.activeAyah = null;
   applyTextScales();
@@ -219,6 +233,7 @@ async function openSurah(nomor, ayah = null) {
   if (state.surah?.nomor !== nomor) {
     state.surah = null;
     state.tafsir = null;
+    state.tajwid = null;
     list.innerHTML = skeletonAyahs();
     $('#loader').hidden = false;
     $('#loaderText').textContent = `Memuat ${meta?.id ?? `surat ${nomor}`}…`;
@@ -226,17 +241,18 @@ async function openSurah(nomor, ayah = null) {
 
   state.abort?.abort();
   state.abort = new AbortController();
+  const { signal } = state.abort;
 
-  try {
-    const data = await getSurah(nomor, { signal: state.abort.signal });
-    state.surah = data;
-    renderAyahs(data);
-    renderSurahFoot(data);
-    syncPlaybackUI(player.playing);
-    if (ayah) scrollToAyah(ayah, { smooth: false });
-    else window.scrollTo({ top: 0, behavior: 'auto' });
-  } catch (err) {
-    if (err.name === 'AbortError') return;
+  // Both sources at once, then render once. Waiting for the tajwid script too
+  // avoids the Arabic visibly swapping editions a moment after it appears.
+  const [surahRes, tajwidRes] = await Promise.allSettled([
+    getSurah(nomor, { signal }),
+    getTajwid(nomor, { signal }),
+  ]);
+
+  if (surahRes.status === 'rejected') {
+    const err = surahRes.reason;
+    if (err?.name === 'AbortError') { $('#loader').hidden = true; return; }
     list.innerHTML = `
       <p class="empty-note">
         Gagal memuat ayat. Periksa koneksi internet lalu coba lagi.<br>
@@ -246,6 +262,24 @@ async function openSurah(nomor, ayah = null) {
         <button class="btn btn--primary" type="button" id="retrySurah">Coba lagi</button>
       </div>`;
     $('#retrySurah')?.addEventListener('click', () => openSurah(nomor, ayah));
+    state.renderedSurah = null;
+    $('#loader').hidden = true;
+    return;
+  }
+
+  // A tajwid failure is not fatal: the reader falls back to the equran.id text
+  // and simply renders without colours.
+  state.tajwid = tajwidRes.status === 'fulfilled' ? tajwidRes.value : null;
+
+  try {
+    const data = surahRes.value;
+    state.surah = data;
+    renderAyahs(data);
+    state.renderedSurah = nomor;
+    renderSurahFoot(data);
+    syncPlaybackUI(player.playing);
+    if (ayah) jumpToAyah(ayah, { smooth: false });
+    else window.scrollTo({ top: 0, behavior: 'auto' });
   } finally {
     $('#loader').hidden = true;
   }
@@ -327,7 +361,7 @@ function renderAyahs(data) {
         </div>
       </div>
       <div class="ayah__body">
-        <p class="ayah__arab" lang="ar" dir="rtl">${esc(a.arab)}<span class="end-mark">${toArabicDigits(a.no)}</span></p>
+        <p class="ayah__arab" lang="ar" dir="rtl">${arabicFor(data.nomor, a)}<span class="end-mark">${toArabicDigits(a.no)}</span></p>
         <p class="ayah__latin"${showLatin ? '' : ' hidden'}>${esc(a.latin)}</p>
         <p class="ayah__tr">${esc(a.tr)}</p>
         ${showTafsir ? '<div class="ayah__tafsir" data-auto="1"></div>' : ''}
@@ -339,8 +373,66 @@ function renderAyahs(data) {
   observeReveals($('#ayahList'));
   startScrollSpy();
   updateReadProgress();
+  renderTajwidLegend();
 
   if (showTafsir) autoFillTafsir();
+}
+
+/**
+ * Arabic for one ayah.
+ *
+ * When the tajwid script is available it is always used, so the text edition does
+ * not change under the reader when they toggle colours — the toggle only decides
+ * whether the rule markup survives. If the tajwid API was unreachable we fall back
+ * to the equran.id text so a network hiccup never costs the reader the mushaf.
+ */
+function arabicFor(nomor, ayah) {
+  if (state.tajwid?.nomor !== nomor) return esc(ayah.arab);
+  const entry = state.tajwid.ayat.find((t) => t.no === ayah.no);
+  if (!entry) return esc(ayah.arab);
+  return getPrefs().tajwid ? entry.html : esc(entry.plain);
+}
+
+/** Legend of the colour families actually used by the surah on screen. */
+function renderTajwidLegend() {
+  const host = $('#tajwidLegend');
+  const p = getPrefs();
+  const rules = state.tajwid?.nomor === state.nomor ? state.tajwid.rules : null;
+
+  if (!p.tajwid || !rules?.length) {
+    host.innerHTML = '';
+    return;
+  }
+
+  const present = new Set(rules.map((r) => TAJWID_RULES[r]?.group).filter(Boolean));
+  const groups = TAJWID_GROUPS.filter((g) => present.has(g.key));
+  if (!groups.length) {
+    host.innerHTML = '';
+    return;
+  }
+
+  host.innerHTML = `
+    <details class="tajwid-legend">
+      <summary>
+        Keterangan warna tajwid
+        <span class="count-chip">${groups.length} kaidah</span>
+      </summary>
+      <ul class="tajwid-legend__list">
+        ${groups.map((g) => {
+          const names = rules
+            .filter((r) => TAJWID_RULES[r]?.group === g.key)
+            .map((r) => TAJWID_RULES[r].id)
+            .join(', ');
+          return `<li class="tajwid-legend__item">
+            <span class="tajwid-legend__swatch tj-g-${g.key}" aria-hidden="true"></span>
+            <span class="tajwid-legend__text">
+              <strong>${esc(g.label)}</strong>
+              <small>${esc(g.hint)} <em>${esc(names)}</em></small>
+            </span>
+          </li>`;
+        }).join('')}
+      </ul>
+    </details>`;
 }
 
 function renderSurahFoot(data) {
@@ -362,11 +454,115 @@ function applyTextScales() {
   root.style.setProperty('--tr-size', `${(1 * p.trScale).toFixed(2)}rem`);
 }
 
+/** Expose the colouring state to CSS (it changes how the active ayah is tinted). */
+function applyTajwidMode() {
+  document.documentElement.dataset.tajwid = getPrefs().tajwid ? 'on' : 'off';
+}
+
+/** Re-render just the Arabic lines, keeping scroll position and audio untouched. */
+function refreshTajwid() {
+  if (!state.surah) return;
+  const colouring = getPrefs().tajwid;
+
+  $$('.ayah').forEach((card) => {
+    const arab = card.querySelector('.ayah__arab');
+    const ayah = state.surah.ayat.find((a) => a.no === Number(card.dataset.ayah));
+    if (!arab || !ayah) return;
+    const endMark = arab.querySelector('.end-mark')?.outerHTML ?? '';
+    arab.innerHTML = arabicFor(state.surah.nomor, ayah) + endMark;
+  });
+
+  $('#btnToggleTajwid')?.classList.toggle('is-on', colouring);
+  renderTajwidLegend();
+}
+
 function scrollToAyah(no, { smooth = true } = {}) {
-  const el = $(`#ayah-${no}`);
+  const el = $(`.ayah[data-ayah="${no}"]`);
   if (!el) return;
   const top = el.getBoundingClientRect().top + window.scrollY - 130;
   window.scrollTo({ top, behavior: smooth ? 'smooth' : 'auto' });
+}
+
+/* ── Jump to ayah ──────────────────────────────────────────────────────── */
+
+let flashTimer = null;
+
+/**
+ * Move the reader to an ayah and flash it, so the landing point is obvious.
+ * Navigation itself goes through the hash so the URL stays shareable; this only
+ * handles the visual move.
+ */
+function jumpToAyah(no, { smooth = true } = {}) {
+  const total = state.surah?.ayat.length ?? 0;
+  if (!total) return null;
+
+  const asked = Math.round(Number(no)) || 1;
+  const target = Math.min(Math.max(asked, 1), total);
+  if (asked !== target) toast(`Nomor ayat harus antara 1 dan ${total}`, '\u26A0');
+
+  scrollToAyah(target, { smooth });
+
+  const card = $(`.ayah[data-ayah="${target}"]`);
+  if (card) {
+    $$('.ayah.is-flash').forEach((el) => el.classList.remove('is-flash'));
+    void card.offsetWidth;   // restart the animation even for the same ayah
+    card.classList.add('is-flash');
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => card.classList.remove('is-flash'), 1900);
+  }
+
+  markAyahGridCurrent(target);
+  return target;
+}
+
+/** Open the picker for the surah currently on screen. */
+function openAyahJump() {
+  if (!state.surah) {
+    toast('Buka surat dulu untuk melompat ke ayat', '\u26A0');
+    return;
+  }
+  const meta = state.index[state.nomor - 1];
+  const total = state.surah.ayat.length;
+
+  $('#ayahJumpSub').textContent = `${meta?.id ?? `Surat ${state.nomor}`} · ${total} ayat`;
+  $('#ayahJumpHint').textContent = `Ketik nomor 1\u2013${total}, atau pilih dari daftar.`;
+  $('#ayahJumpInput').max = String(total);
+  $('#ayahJumpInput').placeholder = `1\u2013${total}`;
+  $('#ayahJumpInput').value = '';
+
+  renderAyahGrid();
+  openDrawer('drawerAyah');
+  markAyahGridCurrent(state.activeAyah);
+  setTimeout(() => $('#ayahJumpInput').focus({ preventScroll: true }), 320);
+}
+
+function renderAyahGrid() {
+  const total = state.surah?.ayat.length ?? 0;
+  $('#ayahGrid').innerHTML = Array.from({ length: total }, (_, i) => {
+    const n = i + 1;
+    return `<button class="ayah-chip" type="button" data-jump="${n}" aria-label="Ke ayat ${n}">${n}</button>`;
+  }).join('');
+}
+
+function markAyahGridCurrent(no) {
+  const current = no ?? state.activeAyah;
+  $$('.ayah-chip').forEach((chip) => {
+    chip.classList.toggle('is-current', Number(chip.dataset.jump) === current);
+  });
+}
+
+/** Jump from the picker: goes through the hash so it behaves like any other link. */
+function gotoAyah(nomor, ayah) {
+  const meta = state.index[nomor - 1];
+  if (!meta) { toast('Nomor surat tidak dikenal', '\u26A0'); return false; }
+  if (!(ayah >= 1 && ayah <= meta.ayat)) {
+    toast(`Surat ${meta.id} hanya punya ${meta.ayat} ayat`, '\u26A0');
+    return false;
+  }
+  closeDrawers();
+  closeCmd();
+  location.hash = `#/surat/${nomor}/${ayah}`;
+  return true;
 }
 
 /* ── Scroll spy → "lanjutkan bacaan" ───────────────────────────────────── */
@@ -383,6 +579,7 @@ function startScrollSpy() {
       if (!visible || !state.surah) return;
 
       pending = Number(visible.target.dataset.ayah);
+      markAyahGridCurrent(pending);
       clearTimeout(spyTimer);
       spyTimer = setTimeout(() => {
         if (!pending) return;
@@ -456,7 +653,7 @@ async function openTafsir(ayahNo = null) {
 
 /** Inline tafsir panel for a single ayah card. */
 async function toggleInlineTafsir(ayahNo) {
-  const card = $(`#ayah-${ayahNo}`);
+  const card = $(`.ayah[data-ayah="${ayahNo}"]`);
   const panel = card?.querySelector('.ayah__tafsir');
   if (!panel) return;
 
@@ -637,6 +834,7 @@ function bindPlayerUI() {
   $('#btnLoop').classList.toggle('is-on', getPrefs().loopAyah);
   $('#btnToggleLatin').classList.toggle('is-on', getPrefs().showLatin);
   $('#btnToggleTafsir').classList.toggle('is-on', getPrefs().showTafsir);
+  $('#btnToggleTajwid').classList.toggle('is-on', getPrefs().tajwid);
 
   player.on('track', (track) => {
     bar.hidden = !track;
@@ -869,6 +1067,10 @@ function renderSettings() {
       <button class="switch" role="switch" aria-checked="${p.showLatin}" data-toggle="showLatin" aria-label="Transliterasi latin"></button>
     </div>
     <div class="set-row">
+      <span class="set-row__label"><strong>Warna hukum tajwid</strong><small>Pewarnaan kaidah pada teks Arab</small></span>
+      <button class="switch" role="switch" aria-checked="${p.tajwid}" data-toggle="tajwid" aria-label="Warna hukum tajwid"></button>
+    </div>
+    <div class="set-row">
       <span class="set-row__label"><strong>Tafsir ringkas</strong><small>Panel tafsir di bawah ayat</small></span>
       <button class="switch" role="switch" aria-checked="${p.showTafsir}" data-toggle="showTafsir" aria-label="Tafsir ringkas"></button>
     </div>
@@ -927,6 +1129,7 @@ function bindSettingsEvents() {
       if (key === 'stars') starfield?.setEnabled(on);
       if (key === 'showLatin') $$('.ayah__latin').forEach((el) => (el.hidden = !on));
       if (key === 'showTafsir') refreshTafsirPanels(on);
+      if (key === 'tajwid') { applyTajwidMode(); refreshTajwid(); }
       return;
     }
 
@@ -1005,17 +1208,45 @@ function closeDrawers() {
 
 let cmdCursor = 0;
 
+/** "2:255", "2.255" or "2 255" — a direct pointer at one ayah. */
+const VERSE_RE = /^\s*(\d{1,3})\s*[:.\s]\s*(\d{1,3})\s*$/;
+
+function parseVerse(q) {
+  const m = VERSE_RE.exec(q);
+  if (!m) return null;
+  const nomor = Number(m[1]);
+  const ayah = Number(m[2]);
+  const meta = state.index[nomor - 1];
+  if (!meta || !(ayah >= 1 && ayah <= meta.ayat)) return null;
+  return { nomor, ayah, meta };
+}
+
 function cmdMatches(q) {
   if (!q) return state.index.slice(0, 8);
+  if (parseVerse(q)) return [];   // a verse reference is its own action
   return state.index.filter((s) => matches(s, q)).slice(0, 40);
 }
 
 function renderCmdResults() {
   const q = $('#cmdInput').value.trim();
   const list = cmdMatches(q);
+  const verse = parseVerse(q);
   cmdCursor = Math.min(cmdCursor, Math.max(list.length - 1, 0));
 
-  $('#cmdResults').innerHTML = list.length
+  // A verse reference is its own action: it deliberately suppresses surah
+  // matches (they can never both apply) and is rendered as the first result.
+  const goto = verse
+    ? `<button class="cmd__item cmd__item--goto" type="button" data-goto="${verse.nomor}:${verse.ayah}">
+        <span class="cmd__item-no">${verse.ayah}</span>
+        <span class="cmd__item-body">
+          <strong>Lompat ke ${esc(verse.meta.id)} ayat ${verse.ayah}</strong>
+          <small>Surat ${verse.nomor} · ${verse.meta.ayat} ayat · tekan Enter</small>
+        </span>
+        <span class="cmd__item-ar" lang="ar" dir="rtl">${esc(verse.meta.ar)}</span>
+      </button>`
+    : '';
+
+  const rest = list.length
     ? list.map((s, i) => `
       <button class="cmd__item${i === cmdCursor ? ' is-cursor' : ''}" type="button" data-nomor="${s.n}">
         <span class="cmd__item-no">${s.n}</span>
@@ -1025,7 +1256,13 @@ function renderCmdResults() {
         </span>
         <span class="cmd__item-ar" lang="ar" dir="rtl">${esc(s.ar)}</span>
       </button>`).join('')
-    : '<p class="empty-note">Tidak ada surat yang cocok.</p>';
+    : '';
+
+  const empty = !goto && !rest
+    ? '<p class="empty-note">Tidak ada surat yang cocok.<br><small>Untuk melompat ke ayat, tulis misalnya <strong>2:255</strong>.</small></p>'
+    : '';
+
+  $('#cmdResults').innerHTML = goto + rest + empty;
 }
 
 function openCmd() {
@@ -1143,6 +1380,17 @@ function bindGlobalUI() {
   });
 
   // Reader toolbar
+  $('#btnAyahJump').addEventListener('click', openAyahJump);
+  $('#ayahJumpForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const raw = $('#ayahJumpInput').value.trim();
+    if (!raw) return;
+    gotoAyah(state.nomor, Number(raw));
+  });
+  $('#ayahGrid').addEventListener('click', (e) => {
+    const chip = e.target.closest('[data-jump]');
+    if (chip) gotoAyah(state.nomor, Number(chip.dataset.jump));
+  });
   $('#btnFontUp').addEventListener('click', () => bump('arabScale', 0.05));
   $('#btnFontDown').addEventListener('click', () => bump('arabScale', -0.05));
   $('#btnToggleLatin').addEventListener('click', (e) => {
@@ -1156,6 +1404,14 @@ function bindGlobalUI() {
     setPref('showTafsir', on);
     e.currentTarget.classList.toggle('is-on', on);
     refreshTafsirPanels(on);
+  });
+  $('#btnToggleTajwid').addEventListener('click', (e) => {
+    const on = !getPrefs().tajwid;
+    setPref('tajwid', on);
+    e.currentTarget.classList.toggle('is-on', on);
+    applyTajwidMode();
+    refreshTajwid();
+    toast(on ? 'Warna tajwid dinyalakan' : 'Warna tajwid dimatikan', '\u06DE');
   });
   $('#btnTop').addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
   $('#btnPrevSurah').addEventListener('click', () => {
@@ -1188,6 +1444,12 @@ function bindGlobalUI() {
   // Command palette
   $('#cmdInput').addEventListener('input', () => { cmdCursor = 0; renderCmdResults(); });
   $('#cmdResults').addEventListener('click', (e) => {
+    const go = e.target.closest('[data-goto]');
+    if (go) {
+      const [nomor, ayah] = go.dataset.goto.split(':').map(Number);
+      gotoAyah(nomor, ayah);
+      return;
+    }
     const item = e.target.closest('[data-nomor]');
     if (!item) return;
     closeCmd();
@@ -1212,6 +1474,9 @@ function bindGlobalUI() {
         return;
       }
       if (e.key === 'Enter') {
+        // A verse reference wins over the highlighted surah.
+        const verse = parseVerse($('#cmdInput').value.trim());
+        if (verse) { gotoAyah(verse.nomor, verse.ayah); e.preventDefault(); return; }
         const list = cmdMatches($('#cmdInput').value.trim());
         if (list[cmdCursor]) { closeCmd(); location.hash = `#/surat/${list[cmdCursor].n}`; }
         e.preventDefault();

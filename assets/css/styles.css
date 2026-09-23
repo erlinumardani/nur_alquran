@@ -1383,16 +1383,20 @@ html[data-theme="light"] .ayah__latin { color: var(--emerald-2); }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
-/* The player is pinned to the bottom edge, so its tooltips must open upwards —
-   below the button they would fall outside the viewport and be clipped. */
-.player [data-tip]::after {
+/* The player is pinned to the bottom edge and the ayah action buttons sit high on
+   a scrolling card, so both must open their tooltips upwards — downwards they
+   would fall outside the viewport and be clipped. */
+.player [data-tip]::after,
+.ayah__acts [data-tip]::after {
   top: auto;
   bottom: calc(100% + 12px);
   transform: translate(-50%, 6px);
   z-index: 90;
 }
-.player [data-tip]:hover::after { transform: translate(-50%, 0); }
-.player [data-tip]::before {
+.player [data-tip]:hover::after,
+.ayah__acts [data-tip]:hover::after { transform: translate(-50%, 0); }
+.player [data-tip]::before,
+.ayah__acts [data-tip]::before {
   content: "";
   position: absolute;
   left: 50%;
@@ -1408,8 +1412,12 @@ html[data-theme="light"] .ayah__latin { color: var(--emerald-2); }
   transition: opacity .2s var(--ease);
   z-index: 90;
 }
-.player [data-tip]:hover::before { opacity: 1; }
-@media (hover: none) { .player [data-tip]::before { display: none; } }
+.player [data-tip]:hover::before,
+.ayah__acts [data-tip]:hover::before { opacity: 1; }
+@media (hover: none) {
+  .player [data-tip]::before,
+  .ayah__acts [data-tip]::before { display: none; }
+}
 
 /* ── 19. Drawers ───────────────────────────────────────────────────────── */
 .scrim {
@@ -1726,7 +1734,247 @@ html[data-theme="light"] .ayah__latin { color: var(--emerald-2); }
 .cmd__item-body small { font-size: .72rem; color: var(--text-mute); }
 .cmd__item-ar { font-family: var(--font-ar-head); font-size: 1.2rem; color: var(--gold-2); }
 
-/* ── 23. Responsive ────────────────────────────────────────────────────── */
+/* "2:255" in the palette offers a direct jump, promoted above surah matches. */
+.cmd__item--goto {
+  margin-bottom: .4rem;
+  border: 1px solid var(--line);
+  background: linear-gradient(135deg, rgb(217 178 95 / .16), transparent 70%);
+}
+.cmd__item--goto .cmd__item-no {
+  color: #0b2019;
+  background: linear-gradient(135deg, var(--gold-1), var(--gold-2));
+  border-color: transparent;
+}
+.cmd__item--goto strong { color: var(--gold-1); }
+html[data-theme="light"] .cmd__item--goto strong { color: var(--gold-3); }
+
+/* ── 23. Tajwid colouring ──────────────────────────────────────────────── */
+
+/*
+ * Rules are grouped by family so the palette is learnable rather than a rainbow:
+ *   green      — dengung (ghunnah family)
+ *   orange     — idgham without ghunnah
+ *   blue       — qalqalah
+ *   pink → red — the madd progression, 2 → 6 harakat
+ *   grey       — letters that are not pronounced
+ */
+html[data-theme="dark"] {
+  --tj-ghunnah: #4ade80;
+  --tj-idgham: #fb923c;
+  --tj-qalqalah: #60a5fa;
+  --tj-madd2: #f9a8d4;
+  --tj-madd-jaiz: #f87171;
+  --tj-madd-wajib: #ef4444;
+  --tj-madd-lazim: #e11d48;
+  --tj-silent: #8aa39a;
+  --tj-legend-bg: rgb(255 255 255 / .04);
+}
+
+html[data-theme="light"] {
+  --tj-ghunnah: #15803d;
+  --tj-idgham: #c2410c;
+  --tj-qalqalah: #1d4ed8;
+  --tj-madd2: #db2777;
+  --tj-madd-jaiz: #e11d48;
+  --tj-madd-wajib: #b91c1c;
+  --tj-madd-lazim: #7f1d1d;
+  --tj-silent: #94a3b8;
+  --tj-legend-bg: rgb(0 0 0 / .03);
+}
+
+/* <tajweed> is an unknown element, so it is inline by default — exactly right. */
+tajweed { color: inherit; }
+
+tajweed[class="ghunnah"],
+tajweed[class="idgham_ghunnah"],
+tajweed[class="ikhafa"],
+tajweed[class="ikhafa_shafawi"],
+tajweed[class="iqlab"] { color: var(--tj-ghunnah); }
+
+tajweed[class="idgham_wo_ghunnah"],
+tajweed[class="idgham_shafawi"],
+tajweed[class="idgham_mutajanisayn"],
+tajweed[class="idgham_mutaqaribayn"] { color: var(--tj-idgham); }
+
+tajweed[class="qalaqah"] { color: var(--tj-qalqalah); }
+
+tajweed[class="madda_normal"] { color: var(--tj-madd2); }
+tajweed[class="madda_permissible"] { color: var(--tj-madd-jaiz); }
+tajweed[class="madda_obligatory"] { color: var(--tj-madd-wajib); }
+tajweed[class="madda_necessary"] { color: var(--tj-madd-lazim); }
+
+/* Not pronounced: muted, with a dotted underline as the cue. */
+tajweed[class="ham_wasl"],
+tajweed[class="slnt"],
+tajweed[class="laam_shamsiyah"] {
+  color: var(--tj-silent);
+  text-decoration: underline dotted;
+  text-underline-offset: .22em;
+  text-decoration-thickness: 1px;
+}
+
+/* While colouring is on, the active-ayah gold tint would fight the palette, so
+   the highlight keeps its glow and background but leaves the ink alone. */
+html[data-tajwid="on"] .ayah.is-active .ayah__arab { color: var(--text); }
+
+/* ── Tajwid legend ─────────────────────────────────────────────────────── */
+
+.tajwid-legend {
+  margin: 0 0 1.3rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--tj-legend-bg);
+  overflow: hidden;
+}
+.tajwid-legend > summary {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  padding: .8rem 1.1rem;
+  font-size: .8rem;
+  font-weight: 700;
+  color: var(--text-dim);
+  cursor: pointer;
+  list-style: none;
+  transition: color .25s var(--ease), background .25s var(--ease);
+}
+.tajwid-legend > summary::-webkit-details-marker { display: none; }
+.tajwid-legend > summary:hover { color: var(--text); background: var(--surface-2); }
+.tajwid-legend > summary::before {
+  content: "";
+  width: 8px; height: 8px;
+  flex: none;
+  border-right: 2px solid var(--gold-2);
+  border-bottom: 2px solid var(--gold-2);
+  rotate: 45deg;
+  translate: 0 -2px;
+  transition: rotate .3s var(--ease), translate .3s var(--ease);
+}
+.tajwid-legend[open] > summary::before { rotate: 135deg; translate: 0 -1px; }
+
+.tajwid-legend__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: .6rem;
+  padding: 0 1.1rem 1.1rem;
+  margin: 0;
+  list-style: none;
+}
+.tajwid-legend__item { display: flex; align-items: flex-start; gap: .6rem; }
+.tajwid-legend__swatch {
+  width: 14px; height: 14px;
+  flex: none;
+  margin-top: .3rem;
+  border-radius: 4px;
+  background: currentColor;
+  box-shadow: 0 0 0 1px var(--line);
+}
+.tajwid-legend__text { min-width: 0; }
+.tajwid-legend__text strong { display: block; font-size: .8rem; font-weight: 700; }
+.tajwid-legend__text small { font-size: .71rem; line-height: 1.55; color: var(--text-mute); }
+
+/* Three-colour dot that previews the tajwid palette in the toolbar button. */
+.tajwid-dot {
+  width: 10px; height: 10px;
+  flex: none;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--tj-ghunnah) 0 33%,
+    var(--tj-qalqalah) 33% 66%,
+    var(--tj-madd-lazim) 66% 100%
+  );
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+.tj-g-ghunnah { color: var(--tj-ghunnah); }.tj-g-idgham { color: var(--tj-idgham); }
+.tj-g-qalqalah { color: var(--tj-qalqalah); }
+.tj-g-madd-2 { color: var(--tj-madd2); }
+.tj-g-madd-jaiz { color: var(--tj-madd-jaiz); }
+.tj-g-madd-wajib { color: var(--tj-madd-wajib); }
+.tj-g-madd-lazim { color: var(--tj-madd-lazim); }
+.tj-g-silent { color: var(--tj-silent); }
+
+/* ── 24. Jump to ayah ──────────────────────────────────────────────────── */
+
+.ayah-jump {
+  display: flex;
+  gap: .5rem;
+  margin-bottom: .7rem;
+}
+.ayah-jump__input {
+  flex: 1;
+  min-width: 0;
+  padding: .6rem .9rem;
+  font-size: .9rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-full);
+  outline: none;
+  transition: border-color .3s var(--ease), box-shadow .3s var(--ease);
+}
+.ayah-jump__input::placeholder { color: var(--text-mute); }
+.ayah-jump__input:focus {
+  border-color: rgb(53 214 164 / .5);
+  box-shadow: var(--glow-emerald);
+}
+/* The number spinner is noise on a field this small. */
+.ayah-jump__input::-webkit-outer-spin-button,
+.ayah-jump__input::-webkit-inner-spin-button { appearance: none; margin: 0; }
+.ayah-jump__input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
+
+.ayah-jump__hint {
+  margin-bottom: 1rem;
+  font-size: .74rem;
+  color: var(--text-mute);
+}
+
+.ayah-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(46px, 1fr));
+  gap: .4rem;
+}
+
+.ayah-chip {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  font-size: .8rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: 11px;
+  transition: color .22s var(--ease), background .22s var(--ease),
+              border-color .22s var(--ease), transform .3s var(--ease-spring);
+}
+.ayah-chip:hover {
+  color: #0b2019;
+  background: linear-gradient(135deg, var(--gold-1), var(--gold-2));
+  border-color: transparent;
+  transform: translateY(-2px);
+}
+.ayah-chip:active { transform: scale(.94); }
+.ayah-chip.is-current {
+  color: #07231b;
+  background: linear-gradient(135deg, var(--emerald-1), var(--emerald-2));
+  border-color: transparent;
+  box-shadow: 0 0 0 2px rgb(53 214 164 / .28);
+}
+
+/* Landing cue after a jump: a gold flare that fades out on its own. */
+.ayah.is-flash {
+  border-color: rgb(217 178 95 / .6);
+  animation: ayah-flash 1.8s var(--ease) forwards;
+}
+@keyframes ayah-flash {
+  0% { box-shadow: 0 0 0 3px rgb(217 178 95 / .7), 0 0 60px -8px rgb(217 178 95 / .9); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* ── 25. Responsive ────────────────────────────────────────────────────── */
 @media (max-width: 980px) {
   :root { --shell: min(1240px, 100% - 1.8rem); }
   .player__reciter { display: none; }
@@ -1744,8 +1992,8 @@ html[data-theme="light"] .ayah__latin { color: var(--emerald-2); }
   .ayah__acts { flex-direction: row; }
   .reader-toolbar { top: calc(var(--topbar-h) + 4px); border-radius: var(--radius); }
   .tool-btn span { display: none; }
-  .tool-btn#btnToggleLatin, .tool-btn#btnToggleTafsir { font-size: .7rem; }
-  .tool-btn#btnToggleLatin span, .tool-btn#btnToggleTafsir span { display: inline; }
+  .tool-btn#btnToggleLatin, .tool-btn#btnToggleTafsir, .tool-btn#btnToggleTajwid { font-size: .7rem; }
+  .tool-btn#btnToggleLatin span, .tool-btn#btnToggleTafsir span, .tool-btn#btnToggleTajwid span { display: inline; }
   .player__inner { flex-wrap: wrap; gap: .5rem; padding: .5rem 0 .7rem; }
   .player__controls { order: 3; width: 100%; justify-content: center; }
   .ctrl--seek { display: none; }
@@ -1754,14 +2002,25 @@ html[data-theme="light"] .ayah__latin { color: var(--emerald-2); }
   .foot-nav { width: 100%; }
   .toasts { bottom: 150px; }
   .surah-hero__desc { text-align: left; }
+
+  /* Touch targets: controls that are comfortable under a mouse pointer are too
+     small under a thumb, so the mobile layout gives them real height. */
+  .tool-btn { min-height: 40px; padding-inline: .9rem; }
+  .act { width: 40px; height: 40px; }
+  .surah-hero__more { padding: .55rem .9rem; }
+  .ayah-chip { border-radius: 13px; }
 }
 
 @media (max-width: 420px) {
   .topbar__actions { gap: 0; }
-  .icon-btn { width: 38px; height: 38px; }
+  /* Keep these at the 44px touch-target guideline; the brand tag is already
+     hidden at this width so the row still fits. */
+  .icon-btn { width: 44px; height: 44px; }
+  .chip { padding: .5rem 1rem; }
+  .seg { padding: .58rem 1.15rem; }
 }
 
-/* ── 24. Accessibility ─────────────────────────────────────────────────── */
+/* ── 26. Accessibility ─────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: .01ms !important;

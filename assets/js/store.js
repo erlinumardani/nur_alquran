@@ -13,6 +13,7 @@ export const DEFAULT_PREFS = {
   trScale: 1,           // multiplier on the base translation font size
   showLatin: true,      // transliteration under each ayah
   showTafsir: false,    // inline tafsir under each ayah
+  tajwid: true,         // colour the Arabic by tajwid rule
   reciter: '05',
   autoplayNext: true,   // continue to the next ayah automatically
   loopAyah: false,

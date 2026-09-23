@@ -88,8 +88,13 @@ Catatan penting tentang konfigurasi:
 - **Nomor ayat** bergaya bintang delapan (khatim) dengan angka Arab-Indic (١، ٢، ٣).
 - **Tafsir Kemenag** — panel samping per surat, atau panel inline per ayat.
 - **Markah ayat** dan **riwayat bacaan terakhir** (tersimpan di perangkat).
+- **Lompat ke ayat**: panel pemilih berisi kotak nomor dan kisi nomor ayat —
+  ketik nomornya atau ketuk salah satu. Ayat yang dituju langsung digulirkan dan
+  diberi kilau emas sebagai penanda mendarat.
+- **Rujukan ayat langsung** dari pencarian: tulis `2:255` (atau `2.255`, `2 255`)
+  lalu Enter.
 - **Penanda progres baca** di bilah atas dan *scroll spy* yang mengingat ayat
-  terakhir yang kamu lihat.
+  terakhir yang kamu lihat; kisi nomor ayat ikut menyorot posisi itu.
 
 ### Murottal
 - **6 qari**: Misyari Rasyid Al-Afasi, Abdullah Al-Juhany, Abdul-Muhsin Al-Qasim,
@@ -117,6 +122,33 @@ Catatan penting tentang konfigurasi:
 > menutup jeda di sambungannya. Konsekuensinya satu surat panjang seperti
 > Al-Baqarah mengunduh banyak berkas kecil secara berurutan, bukan satu berkas besar.
 - Ayat yang sedang diputar disorot dan digulirkan otomatis ke tengah layar.
+
+### Tajwid
+- **Teks Arab diwarnai menurut hukum tajwid** — 17 kaidah, dikelompokkan per
+  keluarga warna agar paletnya bisa dipelajari, bukan sekadar pelangi.
+- **Keterangan warna** per surat: hanya menampilkan kaidah yang benar-benar ada
+  di surat itu, lengkap dengan nama Indonesia dan penjelasannya.
+- Bisa dinyalakan/dimatikan dari bilah baca atau Pengaturan. **Mematikan warna
+  tidak mengubah teksnya** — hanya markup warnanya yang dilepas.
+- Teks Arab memakai **edisi Uthmani**, jadi penanda tajwidnya presisi.
+- Kalau sumber tajwid tidak bisa dihubungi, pembaca **tetap tampil** memakai teks
+  equran.id tanpa warna — bukan halaman error.
+
+#### Skema warna
+
+Skema warna mushaf berbeda-beda antar penerbit, jadi ini skema yang **kami pilih**
+dan cantumkan jelas di dalam aplikasi:
+
+| Warna | Kelompok | Contoh kaidah |
+| --- | --- | --- |
+| Hijau | Dengung | Gunnah, Idgam Bigunnah, Ikhfa Hakiki, Ikhfa Syafawi, Iqlab |
+| Oranye | Idgam tanpa dengung | Idgam Bilagunnah, Idgam Mimi, Mutajanisain, Mutaqaribain |
+| Biru | Qalqalah | Qalqalah |
+| Merah muda → merah tua | Mad | Tabi'i (2), Jaiz Munfasil (2–5), Wajib Muttasil (4–5), Lazim (6) |
+| Abu-abu, garis bawah titik | Tidak dibaca | Hamzah Wasal, Lam Syamsiyah, huruf senyap |
+
+> Aplikasi ini alat bantu belajar, **bukan pengganti guru**. Tajwid adalah ilmu
+> lisan yang seharusnya dipelajari secara talaqqi/musyafahah.
 
 ### Tampilan & animasi
 - Dua tema (gelap & terang) plus mode **otomatis** mengikuti sistem.
@@ -151,6 +183,7 @@ Catatan penting tentang konfigurasi:
 | --- | --- |
 | `/` atau `Ctrl`/`Cmd` + `K` | Buka pencarian surat |
 | `↑` `↓` lalu `Enter` | Pilih hasil pencarian |
+| `2:255` lalu `Enter` | Lompat langsung ke Al-Baqarah ayat 255 |
 | `Spasi` | Putar / jeda murottal |
 | `←` `→` | Mundur / maju 5 detik |
 | `Esc` | Tutup panel atau pencarian |
@@ -178,15 +211,35 @@ tools/                     Skrip build data + tiga suite verifikasi
 
 | Data | Sumber |
 | --- | --- |
-| Teks Arab, transliterasi, terjemahan, tafsir | [equran.id API v2](https://equran.id/apidev/v2) — teks Kemenag RI |
-| Murottal | `cdn.equran.id` |
+| Terjemahan Indonesia, transliterasi, tafsir, murottal | [equran.id API v2](https://equran.id/apidev/v2) — teks Kemenag RI |
+| Teks Arab Uthmani + kaidah tajwid | [Quran Foundation Content API](https://api-docs.quran.foundation/docs/content_apis_versioned/4.0.0/quran-verses-uthmani-tajweed/) (`api.quran.com/api/v4`) |
 | Index 114 surat | Dibundel di `data/surah.json` (dari `api.quran.gading.dev`) |
 
 Index surat sengaja dibundel supaya beranda tampil seketika dan tetap bisa
 dijelajahi tanpa internet. Teks ayat diambil saat dibutuhkan lalu disimpan di
-`localStorage`. URL murottal dibentuk secara deterministik dari nomor surat dan
-nomor ayat (lihat `data.js`), jadi ayat berikutnya bisa di-prefetch tanpa perlu
-meminta data tambahan.
+`localStorage` (tafsir dan teks bertajwid punya kuota cache sendiri karena
+ukurannya lebih besar). URL murottal dibentuk secara deterministik dari nomor
+surat dan nomor ayat (lihat `data.js`), jadi ayat berikutnya bisa di-prefetch
+tanpa perlu meminta data tambahan.
+
+**Kenapa dua sumber teks?** Teks Arab dan tajwid harus berasal dari edisi yang
+sama persis, kalau tidak penanda kaidahnya akan meleset dari hurufnya. Endpoint
+tajwid mengirim teks Uthmani dengan kaidah **tertanam sebagai tag**, jadi tidak
+ada indeks karakter yang perlu diselaraskan — inilah alasan kami memakainya
+ketimbang dataset offset karakter. Terjemahan, transliterasi, dan murottal tetap
+dari equran.id.
+
+Atribusi: teks Uthmani dan anotasi tajwid berasal dari Quran Foundation
+(api.quran.com). Skema warna mengikuti konvensi umum mushaf tajwid; pedoman
+serupa juga diterbitkan Kemenag RI.
+
+> **Belum terverifikasi:** CORS dari `api.quran.com` tidak bisa saya uji tanpa
+> browser asli. Kalau ternyata diblokir, aplikasi tetap berjalan dengan teks
+> equran.id tanpa warna (sudah diuji), tetapi fitur warnanya tidak akan muncul.
+
+> **Sudah terverifikasi (Chrome 153, headless):** `api.quran.com` mengembalikan
+> **HTTP 200** dari browser dan kaidah tajwid benar-benar tampil berwarna —
+> terkonfirmasi lewat `tools/visual.mjs` pada 4 halaman pembaca.
 
 ---
 
@@ -221,12 +274,73 @@ node tools/verify-render.mjs   # menjalankan app.js sungguhan dengan DOM tiruan
 > Catatan: suite ini memverifikasi jalur runtime JavaScript, bukan tata letak CSS
 > atau hasil render visual — untuk itu jalankan aplikasinya di browser.
 
+### Verifikasi visual
+
+`tools/visual.mjs` mengambil tangkapan layar aplikasi lewat Chrome DevTools
+Protocol (tanpa dependensi) dan sekaligus melaporkan error konsol serta
+permintaan jaringan yang gagal — berguna untuk memastikan `api.quran.com` benar
+benar bisa diakses dari browser.
+
+Chrome **tidak bisa dijalankan dari shell agen** karena sandbox menjalankan
+perintah dengan token terbatas, sehingga crashpad Chrome gagal dengan
+`OpenProcess: Access is denied` dan browser keluar tanpa melakukan apa pun.
+Menaikkan izin file ke `danger-full-access` tidak menolong — itu memperluas akses
+berkas, bukan hak handle proses. Jadi browsernya dijalankan oleh Anda, di luar
+sandbox, dan skrip ini hanya menyambung lewat localhost:
+
+```powershell
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" `
+    --headless=new --remote-debugging-port=9222 `
+    --user-data-dir="$env:TEMP\nurcdp" --no-first-run about:blank
+```
+
+Tunggu baris `DevTools listening on ws://127.0.0.1:9222/...`, lalu:
+
+```bash
+npm run visual          # atau: node tools/visual.mjs
+```
+
+Sembilan tangkapan layar (beranda & pembaca, tema gelap/terang, tajwid
+nyala/mati, desktop & ponsel) ditulis ke `.visual/` bersama `report.json`.
+
+Setiap tangkapan juga melewati **audit tata letak**: overflow horizontal, ukuran
+target sentuh, arah dan posisi tooltip, serta apakah webfont benar-benar termuat.
+Audit ini berguna ketika pikselnya tidak bisa diperiksa langsung.
+
+> Kalau Chrome langsung keluar, ia menyerahkan command line ke Chrome yang sudah
+> berjalan. Tutup semua jendela Chrome lalu jalankan lagi.
+
+#### Hasil audit terakhir
+
+| Pemeriksaan | Hasil |
+| --- | --- |
+| `api.quran.com` dari browser | **HTTP 200**, kaidah tajwid tampil di 4/4 halaman pembaca |
+| Webfont (Amiri Quran, Reem Kufi, Plus Jakarta Sans) | Semua termuat |
+| Overflow horizontal | Tidak ada, di semua lebar layar |
+| Tooltip di luar layar | 0 dari 92 |
+| Target sentuh ponsel < 36px | Tidak ada |
+| Error konsol | Tidak ada |
+
+Audit ini menemukan dan memperbaiki tiga hal nyata: tombol aksi ayat hanya
+32×32px dan tombol bilah baca 31px pada ponsel (kini ≥ 40px), serta tooltip
+tombol aksi ayat yang terbuka ke bawah sehingga terpotong di tepi layar.
+
+> Catatan: agen yang menjalankan audit ini memakai model tanpa input gambar, jadi
+> ia **tidak bisa melihat** PNG-nya — verifikasi dilakukan lewat pengukuran
+> geometri dan warna terkomputasi. Untuk penilaian estetika, buka sendiri
+> berkas di `.visual/`.
+
 ---
 
 ## Catatan teknis
 
 - Tanpa framework, tanpa dependensi, tanpa langkah build. Satu `<script type="module">`.
 - XSS dijaga: semua teks dinamis melewati `esc()` sebelum masuk `innerHTML`.
+  **Pengecualiannya teks tajwid**, yang memang berupa HTML dari API. Karena itu
+  `sanitizeTajweed()` membangun ulang markup dari nol: hanya `<tajweed>` dengan
+  kelas kaidah yang dikenal yang dipertahankan, sisanya dibuang, dan seluruh teks
+  di-escape. Sembilan payload berbahaya (script, handler event, iframe, kelas
+  tak dikenal, tag rusak) diuji di `tools/verify.mjs`.
 - `fetch` ayat memakai `AbortController`, jadi berpindah surat dengan cepat tidak
   menimpa hasil yang sudah tampil.
 - Elemen `<audio>` sengaja **tanpa** atribut `crossorigin`, karena CDN murottal

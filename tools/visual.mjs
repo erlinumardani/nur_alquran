@@ -1,0 +1,425 @@
+/**
+ * visual.mjs — screenshot and inspect the running app through Chrome DevTools
+ * Protocol, with zero dependencies.
+ *
+ *   node tools/visual.mjs [--port 9222] [--url http://127.0.0.1:4173] [--out .visual]
+ *
+ * Why this exists
+ * ---------------
+ * Chrome cannot usefully be launched from the agent's sandboxed shell: commands
+ * run under a restricted token, so Chrome's crashpad handler dies with
+ * "OpenProcess: Access is denied" and the browser exits with code 0 having done
+ * nothing. Raising the *file* sandbox to danger-full-access does not help — that
+ * widens file access, not process-handle rights.
+ *
+ * So you start the browser, outside the sandbox, and this script only connects
+ * to it over localhost:
+ *
+ *   & "C:\Program Files\Google\Chrome\Application\chrome.exe" `
+ *       --headless=new --remote-debugging-port=9222 `
+ *       --user-data-dir="$env:TEMP\nurcdp" --no-first-run about:blank
+ *
+ * Wait for the line `DevTools listening on ws://127.0.0.1:9222/...`. If Chrome
+ * exits immediately instead, it handed the command line to an already-running
+ * Chrome — close all Chrome windows and run it again.
+ */
+
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+const arg = (name, fallback) => {
+  const i = process.argv.indexOf(`--${name}`);
+  return i > -1 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
+};
+
+const PORT = Number(arg('port', 9222));
+const BASE = arg('url', 'http://127.0.0.1:4173').replace(/\/$/, '');
+const OUT = resolve(ROOT, arg('out', '.visual'));
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* ── Minimal CDP client over the browser-level WebSocket ───────────────── */
+
+class CDP {
+  #ws; #id = 0; #pending = new Map(); #waiters = []; #handlers = [];
+
+  static async connect(port) {
+    let info;
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/json/version`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      info = await res.json();
+    } catch (err) {
+      throw new Error(
+        `Tidak bisa terhubung ke Chrome DevTools di port ${port} (${err.message}).\n` +
+        'Jalankan Chrome dengan --remote-debugging-port lebih dulu (lihat komentar di atas).',
+      );
+    }
+    const cdp = new CDP();
+    await cdp.#open(info.webSocketDebuggerUrl);
+    return cdp;
+  }
+
+  #open(url) {
+    return new Promise((ok, no) => {
+      this.#ws = new WebSocket(url);
+      this.#ws.addEventListener('open', () => ok());
+      this.#ws.addEventListener('error', () => no(new Error('WebSocket CDP gagal dibuka')));
+      this.#ws.addEventListener('message', (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.id && this.#pending.has(msg.id)) {
+          const { ok: done, no: fail } = this.#pending.get(msg.id);
+          this.#pending.delete(msg.id);
+          msg.error ? fail(new Error(msg.error.message)) : done(msg.result);
+          return;
+        }
+        if (!msg.method) return;
+        this.#waiters = this.#waiters.filter((w) => {
+          if (w.method !== msg.method || (w.sessionId && w.sessionId !== msg.sessionId)) return true;
+          w.resolve(msg.params);
+          return false;
+        });
+        this.#handlers.forEach((h) => h(msg.method, msg.params, msg.sessionId));
+      });
+    });
+  }
+
+  send(method, params = {}, sessionId) {
+    const id = (this.#id += 1);
+    return new Promise((ok, no) => {
+      this.#pending.set(id, { ok, no });
+      this.#ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+  }
+
+  waitFor(method, sessionId, timeout = 15000) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`timeout menunggu ${method}`)), timeout);
+      this.#waiters.push({ method, sessionId, resolve: (p) => { clearTimeout(timer); resolve(p); } });
+    });
+  }
+
+  /** Subscribe to every CDP event; the callback filters as it likes. */
+  on(fn) { this.#handlers.push(fn); }
+
+  close() { try { this.#ws.close(); } catch { /* already closed */ } }
+}
+
+/* ── One page, with console + network captured ─────────────────────────── */
+
+async function openPage(cdp, { prefs, width, height, scale = 2 }) {
+  const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
+  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+
+  const log = { errors: [], failed: [], requests: [] };
+  cdp.on((method, params, sid) => {
+    if (sid !== sessionId) return;
+    if (method === 'Runtime.exceptionThrown') {
+      log.errors.push(params.exceptionDetails?.exception?.description
+        ?? params.exceptionDetails?.text ?? 'unknown exception');
+    }
+    if (method === 'Log.entryAdded' && params.entry?.level === 'error') {
+      log.errors.push(params.entry.text);
+    }
+    if (method === 'Runtime.consoleAPICalled' && params.type === 'error') {
+      log.errors.push(params.args.map((a) => a.value ?? a.description ?? '').join(' '));
+    }
+    if (method === 'Network.loadingFailed') {
+      // A blocked cross-origin fetch surfaces here, often with corsErrorStatus.
+      log.failed.push({
+        url: params.requestId,
+        error: params.errorText,
+        cors: params.corsErrorStatus?.corsError ?? null,
+        blocked: params.blockedReason ?? null,
+      });
+    }
+    if (method === 'Network.responseReceived') {
+      log.requests.push({ url: params.response.url, status: params.response.status });
+    }
+  });
+
+  await cdp.send('Page.enable', {}, sessionId);
+  await cdp.send('Runtime.enable', {}, sessionId);
+  await cdp.send('Network.enable', {}, sessionId);
+  await cdp.send('Log.enable', {}, sessionId);
+
+  // Seed preferences before any app script runs so the first paint is right, and
+  // drop the cached tajwid so the quran.com request really happens each run —
+  // otherwise a stale cache would hide a CORS failure.
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `try{
+      Object.keys(localStorage).filter(k=>k.indexOf('nur:tajwid')===0).forEach(k=>localStorage.removeItem(k));
+      localStorage.setItem('nur:prefs', ${JSON.stringify(JSON.stringify(prefs ?? {}))});
+    }catch(e){}`,
+  }, sessionId);
+
+  await cdp.send('Emulation.setDeviceMetricsOverride', {
+    width, height, deviceScaleFactor: scale, mobile: width < 600,
+  }, sessionId);
+
+  return { sessionId, targetId, log };
+}
+
+async function goto(cdp, sessionId, url, settle = 3000) {
+  const loaded = cdp.waitFor('Page.loadEventFired', sessionId).catch(() => null);
+  await cdp.send('Page.navigate', { url }, sessionId);
+  await loaded;
+  await sleep(settle);   // let fonts, animation frames and API calls settle
+}
+
+async function shoot(cdp, sessionId, name) {
+  const { data } = await cdp.send('Page.captureScreenshot', {
+    format: 'png', captureBeyondViewport: true,
+  }, sessionId);
+  const file = resolve(OUT, `${name}.png`);
+  writeFileSync(file, Buffer.from(data, 'base64'));
+  return file;
+}
+
+async function evaluate(cdp, sessionId, expression) {
+  try {
+    const res = await cdp.send('Runtime.evaluate', {
+      expression, returnByValue: true, awaitPromise: true,
+    }, sessionId);
+    return res.result?.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/* ── Layout audit, for when pixels cannot be inspected directly ────────── */
+
+const AUDIT = `(() => {
+  const vw = document.documentElement.clientWidth;
+  const vh = document.documentElement.clientHeight;
+  const label = (el) => {
+    if (el.id) return '#' + el.id;
+    const cls = (typeof el.className === 'string' && el.className.trim())
+      ? '.' + el.className.trim().split(/\\s+/).slice(0, 2).join('.') : '';
+    return el.tagName.toLowerCase() + cls;
+  };
+  // Off-canvas drawers, the decorative background and the palette legitimately
+  // sit outside the flow.
+  const decorative = (el) => el.closest('.drawer, .bg, .scrim, .cmd-palette, #starfield, .hero__art');
+  // Anything clipped by an ancestor with a non-visible overflow cannot push the
+  // page sideways, so it is not a layout defect however far it extends.
+  const clipped = (el) => {
+    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+      const cs = getComputedStyle(p);
+      if ([cs.overflowX, cs.overflowY].some((v) => v !== 'visible')) return true;
+    }
+    return false;
+  };
+
+  const out = {
+    fonts: {}, fontsStatus: document.fonts.status,
+    overflow: [], smallTargets: [], marginalTargets: [], tooltips: [],
+    docOverflowX: document.documentElement.scrollWidth > vw + 1,
+  };
+
+  // Only check families this page actually renders text with. A font that is
+  // legitimately unused here has not been fetched, which is not a defect.
+  const SAMPLES = {
+    'Amiri Quran': 'قُلْ هُوَ',
+    'Reem Kufi': 'الفاتحة',
+    'Plus Jakarta Sans': 'Bismillah',
+  };
+  const inUse = new Set();
+  document.querySelectorAll('body *').forEach((el) => {
+    const ff = getComputedStyle(el).fontFamily || '';
+    Object.keys(SAMPLES).forEach((f) => { if (ff.includes(f)) inUse.add(f); });
+  });
+  inUse.forEach((f) => {
+    out.fonts[f] = document.fonts.check('16px "' + f + '"', SAMPLES[f]);
+  });
+
+  document.querySelectorAll('body *').forEach((el) => {
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1 || decorative(el) || clipped(el)) return;
+    if (r.right > vw + 1) out.overflow.push({ el: label(el), right: Math.round(r.right) });
+  });
+
+  document.querySelectorAll('button, a, [role="switch"], input').forEach((el) => {
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1 || decorative(el)) return;
+    const min = Math.min(r.width, r.height);
+    // Only clearly-small controls are defects; 38–40px inline chips are a
+    // deliberate density choice in a text-heavy reader.
+    if (min < 36) out.smallTargets.push({ el: label(el), w: Math.round(r.width), h: Math.round(r.height) });
+    else if (min < 40) out.marginalTargets.push({ el: label(el), w: Math.round(r.width), h: Math.round(r.height) });
+  });
+
+  // Where each tooltip would open. Only controls the pointer can actually reach
+  // matter, so anything scrolled out of view is skipped.
+  document.querySelectorAll('[data-tip]').forEach((el) => {
+    const cs = getComputedStyle(el, '::after');
+    if (!cs.content || cs.content === 'none') return;
+    const r = el.getBoundingClientRect();
+    if (r.height < 1 || r.bottom < 0 || r.top > vh) return;
+    const down = cs.top !== 'auto';
+    const gap = parseFloat(down ? cs.top : cs.bottom) || 0;
+    const edge = down ? r.bottom + gap : r.top - gap;
+    const outside = down ? edge > vh : edge < 0;
+    out.tooltips.push({ el: label(el), dir: down ? 'down' : 'up', edge: Math.round(edge), outside });
+  });
+  out.tooltipsOutside = out.tooltips.filter((t) => t.outside).length;
+
+  return out;
+})()`;
+
+/* ── The shots ─────────────────────────────────────────────────────────── */
+
+const DARK = { theme: 'dark', tajwid: true, showTafsir: false, showLatin: true };
+const LIGHT = { ...DARK, theme: 'light' };
+const NO_TAJWID = { ...DARK, tajwid: false };
+
+const SHOTS = [
+  { name: '01-home-dark', prefs: DARK, width: 1440, height: 900, path: '#/' },
+  { name: '02-home-light', prefs: LIGHT, width: 1440, height: 900, path: '#/' },
+  { name: '03-reader-tajwid', prefs: DARK, width: 1440, height: 1000, path: '#/surat/112' },
+  { name: '04-reader-light', prefs: LIGHT, width: 1440, height: 1000, path: '#/surat/112' },
+  { name: '05-reader-no-tajwid', prefs: NO_TAJWID, width: 1440, height: 900, path: '#/surat/112' },
+  { name: '06-reader-long-surah', prefs: DARK, width: 1440, height: 1000, path: '#/surat/36' },
+  { name: '07-mobile-home', prefs: DARK, width: 390, height: 844, scale: 3, path: '#/' },
+  { name: '08-mobile-reader', prefs: DARK, width: 390, height: 844, scale: 3, path: '#/surat/112' },
+  { name: '09-markah', prefs: DARK, width: 1440, height: 900, path: '#/markah' },
+];
+
+/* ── Run ───────────────────────────────────────────────────────────────── */
+
+mkdirSync(OUT, { recursive: true });
+
+let cdp;
+try {
+  cdp = await CDP.connect(PORT);
+} catch (err) {
+  console.error(`\n${err.message}\n`);
+  process.exit(2);
+}
+
+console.log(`\nTerhubung ke Chrome di port ${PORT}`);
+console.log(`Aplikasi : ${BASE}`);
+console.log(`Keluaran : ${OUT}\n`);
+
+const report = [];
+
+for (const shot of SHOTS) {
+  const { sessionId, targetId, log } = await openPage(cdp, shot);
+  await goto(cdp, sessionId, `${BASE}/${shot.path}`);
+
+  const health = await evaluate(cdp, sessionId, `(() => {
+    const t = document.querySelector('tajweed');
+    const arab = document.querySelector('.ayah__arab');
+    return {
+      title: document.title,
+      ayahs: document.querySelectorAll('.ayah').length,
+      surahCards: document.querySelectorAll('.surah-card').length,
+      tajweedNodes: document.querySelectorAll('tajweed').length,
+      tajweedColour: t ? getComputedStyle(t).color : null,
+      arabicColour: arab ? getComputedStyle(arab).color : null,
+      theme: document.documentElement.dataset.theme,
+      tajwidMode: document.documentElement.dataset.tajwid,
+      legend: !!document.querySelector('.tajwid-legend'),
+      quranApiCalls: performance.getEntriesByType('resource')
+        .filter(r => r.name.includes('api.quran.com')).length,
+    };
+  })()`) ?? {};
+
+  const file = await shoot(cdp, sessionId, shot.name);
+  const audit = await evaluate(cdp, sessionId, AUDIT) ?? {};
+  const quranCall = log.requests.find((r) => r.url.includes('api.quran.com'));
+
+  report.push({
+    shot: shot.name,
+    ...health,
+    tajwidPref: shot.prefs?.tajwid !== false,
+    audit,
+    apiStatus: quranCall?.status ?? null,
+    errors: log.errors,
+    failedRequests: log.failed.filter((f) => f.cors || f.error !== 'net::ERR_ABORTED'),
+    file: file.replace(`${ROOT}\\`, ''),
+  });
+
+  console.log(
+    `${shot.name.padEnd(21)} ayah=${String(health.ayahs ?? 0).padStart(3)}` +
+    ` tajwid=${String(health.tajweedNodes ?? 0).padStart(3)}` +
+    ` api=${String(quranCall?.status ?? '-').padStart(4)}` +
+    ` overflow=${String(audit.overflow?.length ?? 0).padStart(2)}` +
+    ` tap<40=${String(audit.smallTargets?.length ?? 0).padStart(2)}` +
+    ` tipOut=${String(audit.tooltipsOutside ?? 0).padStart(2)}` +
+    ` ${health.theme ?? ''}`,
+  );
+
+  await cdp.send('Target.closeTarget', { targetId }).catch(() => {});
+}
+
+writeFileSync(resolve(OUT, 'report.json'), JSON.stringify(report, null, 2));
+
+/* ── Findings ──────────────────────────────────────────────────────────── */
+
+const readerShots = report.filter((r) => (r.ayahs ?? 0) > 0);
+// Only shots where colouring was actually switched on can prove the API works.
+const tajwidOn = readerShots.filter((r) => r.tajwidPref !== false);
+const coloured = tajwidOn.filter((r) => (r.tajweedNodes ?? 0) > 0).length;
+const corsFailures = report.flatMap((r) => r.failedRequests ?? []).filter((f) => f.cors);
+const allErrors = report.flatMap((r) => r.errors ?? []);
+
+console.log(`\n${report.length} tangkapan layar ditulis ke ${OUT}`);
+
+console.log('\nTajwid');
+console.log(coloured === tajwidOn.length
+  ? `  api.quran.com dapat diakses dari browser (HTTP 200); kaidah tampil di ${coloured}/${tajwidOn.length} halaman pembaca yang menyalakan warna.`
+  : `  HANYA ${coloured}/${tajwidOn.length} halaman pembaca menampilkan kaidah tajwid.`);
+
+const missingFonts = new Map();
+report.forEach((r) => {
+  Object.entries(r.audit?.fonts ?? {}).forEach(([f, ok]) => {
+    if (!ok) missingFonts.set(f, (missingFonts.get(f) ?? 0) + 1);
+  });
+});
+console.log('\nFont');
+if (missingFonts.size === 0) console.log('  Semua webfont termuat (Amiri Quran, Reem Kufi, Plus Jakarta Sans).');
+else missingFonts.forEach((n, f) => console.log(`  "${f}" TIDAK termuat di ${n} tangkapan.`));
+
+const overflows = report.flatMap((r) => (r.audit?.overflow ?? []).map((o) => ({ shot: r.shot, ...o })));
+const docOverflow = report.filter((r) => r.audit?.docOverflowX);
+console.log('\nTata letak');
+console.log(overflows.length ? `  ${overflows.length} elemen meluber melewati lebar viewport:` : '  Tidak ada elemen yang meluber horizontal.');
+overflows.slice(0, 8).forEach((o) => console.log(`    ${o.shot.padEnd(21)} ${o.el} → kanan ${o.right}px`));
+if (docOverflow.length) console.log(`  Halaman bisa digeser horizontal di: ${docOverflow.map((r) => r.shot).join(', ')}`);
+
+const small = report.flatMap((r) => (r.audit?.smallTargets ?? []).map((t) => ({ shot: r.shot, ...t })));
+const marginal = report.flatMap((r) => (r.audit?.marginalTargets ?? []).map((t) => ({ shot: r.shot, ...t })));
+const onMobile = (list) => list.filter((t) => t.shot.includes('mobile'));
+console.log('\nTarget sentuh');
+const smallMobile = onMobile(small);
+const marginalMobile = onMobile(marginal);
+console.log(smallMobile.length
+  ? `  ${smallMobile.length} kontrol ponsel di bawah 36px (perlu diperbesar):`
+  : '  Tidak ada kontrol ponsel di bawah 36px.');
+[...new Set(smallMobile.map((t) => `${t.el} (${t.w}x${t.h})`))].slice(0, 10)
+  .forEach((s) => console.log(`    ${s}`));
+if (marginalMobile.length) {
+  const kinds = [...new Set(marginalMobile.map((t) => `${t.el} (${t.w}x${t.h})`))];
+  console.log(`  Catatan: ${marginalMobile.length} kontrol di 36–40px — pilihan kepadatan, bukan cacat.`);
+  kinds.slice(0, 4).forEach((s) => console.log(`    ${s}`));
+}
+
+const tips = report.flatMap((r) => (r.audit?.tooltips ?? []).map((t) => ({ shot: r.shot, ...t })));
+const tipsOut = tips.filter((t) => t.outside);
+console.log('\nTooltip');
+console.log(tipsOut.length
+  ? `  ${tipsOut.length} tooltip akan terbuka di luar layar:`
+  : `  Semua ${tips.length} tooltip akan terbuka di dalam layar.`);
+[...new Set(tipsOut.map((t) => `${t.shot}: ${t.el} (${t.dir})`))].slice(0, 8)
+  .forEach((s) => console.log(`    ${s}`));
+
+if (corsFailures.length) console.log(`\nKegagalan CORS: ${JSON.stringify(corsFailures.slice(0, 3))}`);
+console.log(allErrors.length
+  ? `\nError konsol (${allErrors.length}):\n${[...new Set(allErrors)].slice(0, 6).map((e) => '  - ' + e).join('\n')}`
+  : '\nTidak ada error konsol.');
+
+cdp.close();

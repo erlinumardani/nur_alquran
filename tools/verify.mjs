@@ -229,6 +229,110 @@ check('spellNumber', spellNumber(286) === 'dua ratus delapan puluh enam', spellN
 check('esc escapes markup', esc('<b>&"x"') === '&lt;b&gt;&amp;&quot;x&quot;');
 check('starPolygon returns 16 points', starPolygon(48).split(' ').length === 16);
 
+/* ══════════════════════════════════════════════════════════════════════════
+   Part C — tajwid sanitizer
+   ══════════════════════════════════════════════════════════════════════════ */
+
+console.log('\nPart C — tajwid sanitizer');
+
+const { sanitizeTajweed, stripTajweed, getTajwid, TAJWID_RULES } =
+  await import('../assets/js/data.js');
+
+// The tajweed endpoint returns raw HTML that we deliberately do not escape, so
+// this sanitizer is the only thing standing between it and innerHTML.
+//
+// The security property is precise: after removing the allowed
+// <tajweed class="..."> wrappers, nothing that looks like markup may remain. A
+// payload surviving as escaped text is inert and perfectly safe.
+const ALLOWED_TAG = /<\/?tajweed class="[a-z_]+">/g;
+const residualMarkup = (html) => html.replace(ALLOWED_TAG, '').match(/[<>]/g) ?? [];
+
+const hostile = [
+  ['a script tag', '<script>alert(1)</script>'],
+  ['an event handler', '<img src=x onerror=alert(1)>'],
+  ['an attribute break-out', '" onmouseover="alert(1)'],
+  ['an iframe', '<iframe src="//evil.test"></iframe>'],
+  ['an unknown tajweed class', '<tajweed class=evil>x</tajweed>'],
+  ['a javascript: url', '<a href="javascript:alert(1)">x</a>'],
+  ['extra attributes on a tajweed tag', '<tajweed class=qalaqah style="x">د</tajweed>'],
+  ['an uppercase tag', '<TAJWEED CLASS=qalaqah>د</TAJWEED>'],
+  ['a broken tag', '<tajweed class=qalaqah د'],
+];
+
+for (const [label, input] of hostile) {
+  const { html } = sanitizeTajweed(input);
+  const residual = residualMarkup(html);
+  const unknownRules = [...html.matchAll(/<tajweed class="([a-z_]+)">/g)]
+    .filter((m) => !TAJWID_RULES[m[1]]);
+  if (residual.length) fail(`${label} left markup behind: ${html}`);
+  else if (unknownRules.length) fail(`${label} emitted an unknown rule class: ${html}`);
+  else if (html.includes('&lt;tajweed')) fail(`${label} leaks the tag as visible text: ${html}`);
+  else pass(`${label} is neutralised`);
+}
+
+// Known rules must survive, rewritten as quoted, whitelisted markup.
+const good = sanitizeTajweed('قُلْ <tajweed class=qalaqah>د</tajweed>ٌ <span class=end>١</span>');
+check('a known rule is preserved', good.html === 'قُلْ <tajweed class="qalaqah">د</tajweed>ٌ', good.html);
+check('the rule is reported for the legend', good.rules.join(',') === 'qalaqah', good.rules.join(','));
+check('the API ayah-number span is dropped (the reader draws its own)',
+  !/end|١/.test(good.html), good.html);
+check('plain text has no markup left', !/[<>]/.test(stripTajweed(good.html)), stripTajweed(good.html));
+
+// Unquoted attributes are what the API actually sends.
+const unquoted = sanitizeTajweed('<tajweed class=ghunnah>نّ</tajweed>');
+check('unquoted class attributes are handled',
+  unquoted.html === '<tajweed class="ghunnah">نّ</tajweed>', unquoted.html);
+
+// Every documented rule must be recognised, or its letters would lose their colour.
+const allRules = Object.keys(TAJWID_RULES).map((r) => `<tajweed class=${r}>ا</tajweed>`).join('');
+check('all documented rules are recognised',
+  sanitizeTajweed(allRules).rules.length === Object.keys(TAJWID_RULES).length,
+  `${sanitizeTajweed(allRules).rules.length}/${Object.keys(TAJWID_RULES).length}`);
+check('each rule maps to a colour group',
+  Object.values(TAJWID_RULES).every((r) => r.group && r.id && r.note));
+
+// Network path.
+const tajwidFixture = {
+  verses: [
+    { verse_key: '112:1', text_uthmani_tajweed: 'قُلْ هُوَ <tajweed class=ham_wasl>ٱ</tajweed>للَّهُ أَحَ<tajweed class=qalaqah>د</tajweed>ٌ <span class=end>١</span>' },
+    { verse_key: '112:2', text_uthmani_tajweed: 'ٱللَّهُ <tajweed class=ghunnah>نّ</tajweed>َ <span class=end>٢</span>' },
+  ],
+};
+globalThis.fetch = async (url) =>
+  (String(url).includes('api.quran.com')
+    ? { ok: true, status: 200, json: async () => tajwidFixture }
+    : { ok: true, status: 200, json: async () => ({ code: 200, data: { ayat: [] } }) });
+
+const t = await getTajwid(112);
+check('getTajwid maps verses by ayah number',
+  t.ayat.length === 2 && t.ayat[0].no === 1 && t.ayat[1].no === 2);
+check('getTajwid reports the rules present',
+  t.rules.includes('qalaqah') && t.rules.includes('ham_wasl'), t.rules.join(','));
+// Derived from the fixture at runtime rather than hand-typed: Arabic literals in
+// source files are easy to get subtly wrong (NFC/NFD, alef variants), and the
+// point here is that the plain text equals the source text minus its markup.
+const rawAyah = tajwidFixture.verses[0].text_uthmani_tajweed;
+const expectedPlain = rawAyah
+  .replace(/<span class=end>.*?<\/span>/g, '')   // the reader draws its own number
+  .replace(/<[^>]*>/g, '')
+  .trim();
+check('getTajwid exposes plain text matching the source minus markup',
+  t.ayat[0].plain === expectedPlain,
+  `${JSON.stringify(t.ayat[0].plain)} vs ${JSON.stringify(expectedPlain)}`);
+check('the API ayah number is not duplicated into the text',
+  !t.ayat[0].plain.includes('\u0661'), t.ayat[0].plain);
+check('the plain text keeps the Uthmani letters intact',
+  t.ayat[0].plain.length > 10 && !/[<>]/.test(t.ayat[0].plain));
+check('the coloured html keeps the same letters as the plain text',
+  stripTajweed(t.ayat[0].html) === t.ayat[0].plain);
+check('getTajwid caches to localStorage', store.has('nur:tajwid:112'));
+check('clearCache removes tajwid too', clearCache() >= 0 && !store.has('nur:tajwid:112'));
+
+globalThis.fetch = async () => { throw new Error('network down'); };
+let threw = false;
+try { await getTajwid(113); } catch { threw = true; }
+check('getTajwid rejects when the API is unreachable (caller falls back)', threw);
+
 /* ── Summary ───────────────────────────────────────────────────────────── */
 
 console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`);

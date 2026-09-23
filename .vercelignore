@@ -4,6 +4,7 @@ server.mjs
 README.md
 .gitignore
 .vercelignore
+.visual/
 
 # Editor / OS noise
 .DS_Store
