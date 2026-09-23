@@ -251,10 +251,29 @@ masker adaptif Android (lingkaran, squircle, kotak membulat).
 - **Tidak ada `skipWaiting()`.** Mengaktifkan worker baru saat halaman lama masih
   terbuka bisa menyajikan aset yang tidak diharapkan halaman itu. Pembaruan masuk
   saat aplikasi dibuka berikutnya.
-- API terjemahan/tafsir/tajwid memakai network-first dengan cadangan cache;
-  font dan ikon cache-first; murottal disimpan saat diputar dengan batas 60 berkas.
+- **Worker mewarisi CSP situs**, karena `vercel.json` menerapkan aturannya ke
+  semua path termasuk `/sw.js`. Akibatnya semua yang di-`fetch` worker diperiksa
+  terhadap **`connect-src`** — termasuk audio dan font, yang oleh halaman sendiri
+  dimuat lewat `media-src`/`font-src`. Origin yang di-fetch worker **wajib** ada
+  di `connect-src`, kalau tidak permintaannya ditolak sebelum keluar dari browser.
+  `tools/validate-vercel.mjs` membaca daftar host langsung dari `sw.js` dan
+  memastikan `connect-src` mencakup semuanya.
+- **Murattal** disimpan sebagai respons opaque (media lintas-origin diambil mode
+  `no-cors`, dan `cdn.equran.id` memang tidak mengirim header CORS). Cache API
+  menolak menyimpan 206 biasa, tetapi respons opaque berstatus 0 sehingga tetap
+  bisa disimpan — inilah sebabnya audio offline benar-benar bekerja. Terukur:
+  dua berkas tersimpan setelah memutar satu ayat.
 - Bila registrasi gagal (mis. konteks tidak aman), aplikasi tetap berjalan normal
   — offline adalah bonus, bukan syarat untuk membaca.
+
+### Header produksi juga dipakai saat pengembangan
+
+`server.mjs` membaca `vercel.json` dan menerapkan header keamanannya secara lokal
+(header caching dilewati agar pengembangan selalu revalidate). Ini bukan hiasan:
+sebelumnya server lokal tidak mengirim CSP sama sekali, sehingga bug nyata —
+pemutaran murottal ditolak CSP di produksi — lolos dari semua pengujian lokal
+karena hanya muncul setelah deploy. Sekarang lingkungan lokal berperilaku seperti
+produksi, dan `npm run visual` menangkap pelanggaran CSP sebelum deploy.
 
 ### Sumber data
 
@@ -374,6 +393,7 @@ Audit ini berguna ketika pikselnya tidak bisa diperiksa langsung.
 | Baris bilah di ponsel | 2 baris rata (4×72px dan 5×56px @390px; 4×64px dan 5×50px @360px), tanpa label terpotong |
 | Pemasangan | Chrome: **bisa dipasang**, tanpa installability error; manifest terbaca bersih |
 | Offline (jaringan dimatikan total) | Beranda memuat 114 surat, tema & font aktif; surat yang pernah dibuka tetap tampil |
+| Murattal | 2 permintaan ke `cdn.equran.id` berstatus 206, tidak diblokir CSP; 2 berkas tersimpan untuk offline |
 | Error konsol | Tidak ada |
 
 Audit ini menemukan dan memperbaiki lima hal nyata:

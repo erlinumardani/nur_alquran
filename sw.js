@@ -16,7 +16,7 @@
  *     an installed app, is simply reopening it.
  */
 
-const VERSION = 'nur-v1';
+const VERSION = 'nur-v2';
 const SHELL = `${VERSION}-shell`;
 const FONTS = `${VERSION}-fonts`;
 const API = `${VERSION}-api`;
@@ -86,10 +86,7 @@ async function networkFirst(request, cacheName, fallbackUrl) {
       const page = await shell.match(fallbackUrl);
       if (page) return page;
     }
-    return new Response('Tidak ada koneksi dan halaman ini belum tersimpan.', {
-      status: 503,
-      headers: { 'content-type': 'text/plain; charset=utf-8' },
-    });
+    return offlineResponse();
   }
 }
 
@@ -98,12 +95,65 @@ async function cacheFirst(request, cacheName, { limit } = {}) {
   const cached = await cache.match(request);
   if (cached) return cached;
 
-  const fresh = await fetch(request);
-  if (fresh && fresh.ok) {
-    await cache.put(request, fresh.clone()).catch(() => {});
-    if (limit) await trim(cache, limit);
+  try {
+    const fresh = await fetch(request);
+    if (fresh && fresh.ok) {
+      await cache.put(request, fresh.clone()).catch(() => {});
+      if (limit) await trim(cache, limit);
+    }
+    return fresh;
+  } catch {
+    // A failed fetch must not reject `respondWith`: that surfaces as an
+    // unhandled rejection in the worker. Returning a real response keeps the
+    // failure clean and diagnosable. One cause worth knowing about: this worker
+    // inherits the site CSP, so every origin it re-fetches must be listed in
+    // connect-src or the request is refused before it leaves the browser.
+    return offlineResponse();
   }
-  return fresh;
+}
+
+/* -- Media --------------------------------------------------------------- */
+
+/**
+ * Audio gets its own strategy because media elements request byte ranges, and a
+ * 206 partial response cannot be stored by the Cache API. Cross-origin media is
+ * also fetched in `no-cors` mode, which makes the response opaque: its body
+ * cannot be read, so it cannot be sliced either.
+ *
+ * So the recording is fetched exactly as the element asked, and whatever comes
+ * back is stored under the plain URL (later range requests for the same ayah
+ * then find it). Entries the Cache API refuses are skipped quietly — playback
+ * is unaffected either way, because the network response is what is returned.
+ *
+ * `fetch(request)` must pass the original request through. Rebuilding it from
+ * `request.url` defaults to `cors` mode, and if the CDN sends no CORS headers
+ * the request fails outright instead of playing.
+ */
+async function mediaStrategy(request, cacheName, limit) {
+  const cache = await caches.open(cacheName);
+  const cached = await cache.match(request.url);
+  if (cached) return cached;
+
+  try {
+    const fresh = await fetch(request);
+    // `ok` is false for an opaque response (status 0), which is still worth
+    // keeping, so both are accepted.
+    if (fresh.ok || fresh.type === 'opaque') {
+      await cache.put(request.url, fresh.clone()).catch(() => {});
+      await trim(cache, limit);
+    }
+    return fresh;
+  } catch {
+    // Offline, or refused by CSP: let the element fail, but cleanly.
+    return offlineResponse();
+  }
+}
+function offlineResponse() {
+  return new Response('Sumber ini belum tersimpan untuk dibaca offline.', {
+    status: 504,
+    statusText: 'Offline',
+    headers: { 'content-type': 'text/plain; charset=utf-8' },
+  });
 }
 
 /** Drop the oldest entries once a cache grows past its limit. */
@@ -150,7 +200,7 @@ self.addEventListener('fetch', (event) => {
 
   // Murattal: keep what has been played, bounded.
   if (url.hostname === 'cdn.equran.id') {
-    event.respondWith(cacheFirst(request, AUDIO, { limit: AUDIO_LIMIT }));
+    event.respondWith(mediaStrategy(request, AUDIO, AUDIO_LIMIT));
     return;
   }
 

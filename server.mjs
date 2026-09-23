@@ -8,7 +8,7 @@
  */
 
 import { createServer } from 'node:http';
-import { createReadStream, promises as fs } from 'node:fs';
+import { createReadStream, promises as fs, readFileSync } from 'node:fs';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -45,6 +45,42 @@ function safeResolve(urlPath) {
   return abs;
 }
 
+/* ── Production headers, applied locally ───────────────────────────────── */
+
+/**
+ * Vercel applies vercel.json's header rules to *every* path — including sw.js.
+ * That matters: the service worker inherits the site's CSP, so anything it
+ * re-fetches must satisfy connect-src. Serving no CSP locally once hid a real
+ * bug where audio playback was refused in production but worked in development.
+ *
+ * Only the non-caching headers are mirrored; the dev server always revalidates.
+ */
+const HEADER_RULES = (() => {
+  // vercel.json sources are path-to-regexp patterns; `(.*)` is the only form
+  // used here, so splitting on it and escaping the remainder is exact.
+  const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const toRegExp = (source) =>
+    new RegExp(`^${source.split('(.*)').map(escapeRegex).join('(.*)')}$`);
+
+  try {
+    const config = JSON.parse(readFileSync(join(ROOT, 'vercel.json'), 'utf8'));
+    return (config.headers ?? []).map((rule) => ({
+      re: toRegExp(rule.source),
+      // The dev server always revalidates, so caching directives are skipped.
+      headers: (rule.headers ?? []).filter((h) => h.key.toLowerCase() !== 'cache-control'),
+    }));
+  } catch {
+    return [];
+  }
+})();
+
+function applyHeaders(pathname, headers) {
+  for (const rule of HEADER_RULES) {
+    if (!rule.re.test(pathname)) continue;
+    for (const { key, value } of rule.headers) headers[key] = value;
+  }
+}
+
 const server = createServer(async (req, res) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     res.writeHead(405, { allow: 'GET, HEAD' }).end('Method Not Allowed');
@@ -66,6 +102,8 @@ const server = createServer(async (req, res) => {
 
     const type = MIME[extname(filePath).toLowerCase()] ?? 'application/octet-stream';
     const etag = `W/"${stat.size}-${Math.round(stat.mtimeMs)}"`;
+    const extra = {};
+    applyHeaders(new URL(req.url || '/', 'http://localhost').pathname, extra);
 
     if (req.headers['if-none-match'] === etag) {
       res.writeHead(304).end();
@@ -78,6 +116,7 @@ const server = createServer(async (req, res) => {
       etag,
       // Local development: always revalidate so edits show up on refresh.
       'cache-control': 'no-cache',
+      ...extra,
     });
 
     if (req.method === 'HEAD') {

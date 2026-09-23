@@ -122,9 +122,24 @@ if (!csp) {
     else { fail(`CSP does not permit ${origin} — the browser would block it`); uncovered += 1; }
   }
 
+  // The service worker inherits this same CSP (it is served by the catch-all
+  // rule), and everything it re-fetches is checked against connect-src — even
+  // media and fonts, which the page itself loads under media-src/font-src.
+  // Hosts are read straight out of the worker's routing table, so adding a new
+  // route without updating the policy fails here instead of in production.
+  const swSource = read('sw.js');
+  const swHosts = [...swSource.matchAll(/hostname\s*===\s*'([a-z0-9.-]+)'/gi)].map((m) => m[1]);
+  if (!swHosts.length) fail('could not read any hostname routes out of sw.js');
+  const connect = directive('connect-src');
+  for (const host of [...new Set(swHosts)].sort()) {
+    if (connect.includes(`https://${host}`)) pass(`connect-src covers the worker's route to ${host}`);
+    else fail(`service worker re-fetches ${host} but connect-src omits it — the worker's own CSP will refuse the request`);
+  }
+
   for (const [dir, token] of [
     ['img-src', 'data:'],
     ['style-src', "'unsafe-inline'"],
+    ['worker-src', "'self'"],
   ]) {
     if (directive(dir).includes(token)) pass(`${dir} allows ${token}`);
     else fail(`${dir} is missing ${token}`);

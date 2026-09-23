@@ -608,6 +608,68 @@ async function auditPwa(cdp) {
   return { manifest, installability, swControlled, cacheNames, offline, offlineSurah };
 }
 
+/* ── Murattal: does the audio request actually leave the browser? ──────── */
+
+/**
+ * The service worker inherits the site CSP, so a missing connect-src entry
+ * silently kills playback in production while working fine on a dev server with
+ * no CSP. This plays one ayah and inspects the resulting request.
+ */
+async function auditAudio(cdp) {
+  const { sessionId, targetId, log } = await openPage(cdp, { prefs: DARK, width: 900, height: 800 });
+  await goto(cdp, sessionId, `${BASE}/#/surat/112`, 2500);
+
+  // A programmatic click is enough: assigning src issues the request whether or
+  // not the autoplay policy then allows playback to start.
+  await evaluate(cdp, sessionId, `document.querySelector('.ayah__no').click()`);
+  await sleep(4500);
+
+  const audio = log.requests.filter((r) => r.url.includes('cdn.equran.id'));
+  const state = await evaluate(cdp, sessionId, `(() => {
+    const a = document.querySelector('audio');
+    return a ? { src: a.currentSrc || a.src, error: a.error ? a.error.code : null } : null;
+  })()`);
+  // Proves offline murattal really works, rather than merely claiming to.
+  const cachedAudio = await evaluate(cdp, sessionId, `(async () => {
+    try { return (await caches.open('nur-v2-audio')).keys().then(k => k.length); } catch { return null; }
+  })()`);
+
+  // Cross-origin media is normally fetched no-cors, which makes the response
+  // opaque and unsliceable. Knowing whether the CDN offers CORS decides whether
+  // a smarter caching strategy is even possible.
+  const corsProbe = await evaluate(cdp, sessionId, `fetch(
+    'https://cdn.equran.id/audio-partial/Misyari-Rasyid-Al-Afasi/112001.mp3', { mode: 'cors' })
+    .then(r => 'cors ' + r.status).catch(() => 'cors blocked')`);
+
+  await cdp.send('Target.closeTarget', { targetId }).catch(() => {});
+  return { audio, state, cachedAudio, corsProbe, errors: log.errors, failed: log.failed };
+}
+
+console.log('\nMurattal');
+try {
+  const audio = await auditAudio(cdp);
+  // 206 is a success: media elements fetch byte ranges.
+  const ok = audio.audio.filter((r) => r.status >= 200 && r.status < 300);
+  console.log(`  Permintaan ke cdn.equran.id: ${audio.audio.length}`
+    + `${audio.audio.length ? ` (status ${audio.audio.map((r) => r.status).join(', ')})` : ''}`);
+  if (audio.state?.src) console.log(`  Elemen audio memuat: ...${String(audio.state.src).slice(-26)}`);
+  if (audio.state?.error) console.log(`  Kode error elemen audio: ${audio.state.error}`);
+  const cspErrors = audio.errors.filter((e) => /Content Security Policy|Refused to/i.test(e));
+  if (cspErrors.length) {
+    console.log(`  DIBLOKIR CSP: ${cspErrors[0].split('\n')[0]}`);
+  } else if (ok.length) {
+    console.log('  Audio terunduh tanpa diblokir CSP.');
+  } else if (!audio.audio.length) {
+    console.log('  TIDAK ada permintaan audio sama sekali.');
+  } else {
+    console.log('  Permintaan audio terjadi tetapi tidak ada yang berhasil.');
+  }
+  console.log(`  Berkas murattal tersimpan untuk offline: ${audio.cachedAudio ?? '(tidak diketahui)'}`);
+  console.log(`  CORS dari cdn.equran.id: ${audio.corsProbe}`);
+} catch (err) {
+  console.log(`  Audit audio gagal: ${err.message}`);
+}
+
 console.log('\nPemasangan (PWA)');
 try {
   const pwa = await auditPwa(cdp);
