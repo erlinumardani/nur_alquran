@@ -354,6 +354,24 @@ const SHOTS = [
     path: '#/surat/112',
     after: "document.querySelector('#btnToggleToolbar').click()",
   },
+  // The install drawer, opened directly. Clicking the real button would call
+  // BeforeInstallPromptEvent.prompt(), which Chrome refuses without a genuine
+  // user gesture and logs as an error — a capture artefact, not an app fault.
+  // The click path itself is covered by the runtime test suite.
+  {
+    name: '11-install-drawer',
+    prefs: DARK,
+    width: 430,
+    height: 900,
+    scale: 2,
+    path: '#/',
+    after: `(() => {
+      const d = document.querySelector('#drawerInstall');
+      d.classList.add('is-open');
+      d.setAttribute('aria-hidden', 'false');
+      document.querySelector('#scrim').hidden = false;
+    })()`,
+  },
 ];
 
 /* ── Run ───────────────────────────────────────────────────────────────── */
@@ -532,5 +550,96 @@ if (corsFailures.length) console.log(`\nKegagalan CORS: ${JSON.stringify(corsFai
 console.log(allErrors.length
   ? `\nError konsol (${allErrors.length}):\n${[...new Set(allErrors)].slice(0, 6).map((e) => '  - ' + e).join('\n')}`
   : '\nTidak ada error konsol.');
+
+/* ── Installable app + offline behaviour ───────────────────────────────── */
+
+/** Poll a page-side expression until it is truthy (or time out). */
+async function waitForEval(cdp, sessionId, expression, timeout = 8000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (await evaluate(cdp, sessionId, expression)) return true;
+    await sleep(250);
+  }
+  return false;
+}
+
+async function auditPwa(cdp) {
+  const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
+  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+  await cdp.send('Page.enable', {}, sessionId);
+  await cdp.send('Runtime.enable', {}, sessionId);
+  await cdp.send('Network.enable', {}, sessionId);
+
+  await goto(cdp, sessionId, `${BASE}/#/`, 4000);
+
+  const manifest = await cdp.send('Page.getAppManifest', {}, sessionId)
+    .catch((e) => ({ parseError: e.message }));
+  const installability = await cdp.send('Page.getInstallabilityErrors', {}, sessionId)
+    .catch((e) => ({ installabilityErrors: [{ errorId: `unavailable: ${e.message}` }] }));
+
+  // The worker installs, activates and claims this page — no reload needed.
+  const swControlled = await waitForEval(cdp, sessionId, '!!navigator.serviceWorker.controller', 10000);
+  const cacheNames = await evaluate(cdp, sessionId, `caches.keys()`) ?? [];
+
+  // Cut the network entirely and navigate again: the reader must still boot.
+  await cdp.send('Network.emulateNetworkConditions', {
+    offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0,
+  }, sessionId);
+  await goto(cdp, sessionId, `${BASE}/#/`, 3500).catch(() => {});
+  const offline = await evaluate(cdp, sessionId, `({
+    cards: document.querySelectorAll('.surah-card').length,
+    chips: document.querySelectorAll('.chip').length,
+    styled: getComputedStyle(document.documentElement).getPropertyValue('--gold-2').trim(),
+    heading: (document.querySelector('.hero__title') || {}).textContent || '',
+  })`);
+
+  // A previously-read surah should also work offline, from the localStorage cache.
+  await goto(cdp, sessionId, `${BASE}/#/surat/112`, 3000).catch(() => {});
+  const offlineSurah = await evaluate(cdp, sessionId, `({
+    ayahs: document.querySelectorAll('.ayah').length,
+    firstAyah: !!document.querySelector('.ayah__arab'),
+  })`);
+
+  await cdp.send('Network.emulateNetworkConditions', {
+    offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1,
+  }, sessionId);
+  await cdp.send('Target.closeTarget', { targetId }).catch(() => {});
+
+  return { manifest, installability, swControlled, cacheNames, offline, offlineSurah };
+}
+
+console.log('\nPemasangan (PWA)');
+try {
+  const pwa = await auditPwa(cdp);
+
+  const manifestErrors = pwa.manifest?.errors ?? [];
+  console.log(manifestErrors.length
+    ? `  Manifest punya ${manifestErrors.length} error: ${manifestErrors.map((e) => e.message ?? e).join('; ')}`
+    : '  Manifest terbaca tanpa error.');
+
+  // `data` carries the raw manifest JSON; `parsed` only has scope/start_url.
+  let manifestName = null;
+  try { manifestName = JSON.parse(pwa.manifest?.data ?? '{}').name ?? null; } catch { /* ignore */ }
+  console.log(`  Nama aplikasi: ${manifestName ?? '(tidak terbaca)'}`);
+
+  const errs = (pwa.installability?.installabilityErrors ?? []).map((e) => e.errorId);
+  console.log(errs.length
+    ? `  BELUM BISA DIPASANG: ${errs.join(', ')}`
+    : '  Chrome melaporkan aplikasi BISA DIPASANG (tidak ada installability error).');
+
+  console.log(`  Service worker mengendalikan halaman: ${pwa.swControlled ? 'ya' : 'TIDAK'}`);
+  console.log(`  Cache dibuat: ${(pwa.cacheNames ?? []).join(', ') || '(tidak ada)'}`);
+
+  const off = pwa.offline ?? {};
+  console.log(`  Mode offline — beranda: ${off.cards} kartu surat, ${off.chips} chip,`
+    + ` tema ${off.styled || '?'}, judul "${(off.heading || '').trim()}"`);
+  console.log(`  Mode offline — surat tersimpan: ${pwa.offlineSurah?.ayahs} ayat`
+    + `${pwa.offlineSurah?.firstAyah ? '' : ' (teks Arab TIDAK ada)'}`);
+  if (!errs.length && off.cards === 114 && pwa.offlineSurah?.ayahs > 0) {
+    console.log('  Offline berfungsi penuh: shell + index surat + surat yang pernah dibuka.');
+  }
+} catch (err) {
+  console.log(`  Audit PWA gagal: ${err.message}`);
+}
 
 cdp.close();

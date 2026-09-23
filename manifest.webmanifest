@@ -1,0 +1,62 @@
+{
+  "name": "Nūr al-Qur'ān — Al-Qur'an & Terjemahan Indonesia",
+  "short_name": "Nūr al-Qur'ān",
+  "description": "Bacaan Al-Qur'an 114 surat dengan terjemahan Kemenag RI, tafsir, warna hukum tajwid, dan murottal 6 qari. Bisa dibaca offline.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "theme_color": "#04140f",
+  "background_color": "#04140f",
+  "lang": "id",
+  "dir": "ltr",
+  "categories": ["books", "education", "lifestyle"],
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Lanjutkan bacaan",
+      "short_name": "Lanjut",
+      "url": "/#/markah",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Surat Yasin",
+      "short_name": "Yasin",
+      "url": "/#/surat/36",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Surat Al-Kahf",
+      "short_name": "Al-Kahf",
+      "url": "/#/surat/18",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

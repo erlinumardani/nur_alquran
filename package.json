@@ -8,6 +8,7 @@
     "start": "node server.mjs",
     "dev": "node server.mjs 4173",
     "verify": "node tools/validate-vercel.mjs && node tools/verify.mjs && node tools/verify-render.mjs",
+    "icons": "node tools/make-icons.mjs",
     "visual": "node tools/visual.mjs"
   },
   "engines": {

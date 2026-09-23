@@ -157,6 +157,19 @@ dan cantumkan jelas di dalam aplikasi:
 > Aplikasi ini alat bantu belajar, **bukan pengganti guru**. Tajwid adalah ilmu
 > lisan yang seharusnya dipelajari secara talaqqi/musyafahah.
 
+### Aplikasi & offline
+- Bisa **dipasang sebagai aplikasi** di ponsel maupun desktop — tanpa app store.
+  Android/Chrome lewat tombol pasang di bilah atas (atau menu peramban), iPhone/iPad
+  lewat **Bagikan → Tambahkan ke Layar Utama**; aplikasi menyediakan petunjuknya.
+- Terbuka **layar penuh tanpa bilah alamat**, dengan ikon sendiri di layar utama
+  dan pintasan (Lanjutkan bacaan, Yasin, Al-Kahf).
+- **Bisa dibaca tanpa internet.** Service worker menyimpan kerangka aplikasi,
+  index 114 surat, terjemahan & tafsir yang pernah dibuka, serta murottal yang
+  pernah diputar (dibatasi 60 berkas).
+- Menghormati **safe area** (notch dan home indicator) saat berjalan sebagai
+  aplikasi terpasang.
+- Tema mengikuti sistem, dan bilah status perangkat diwarnai senada.
+
 ### Tampilan & animasi
 - Dua tema (gelap & terang) plus mode **otomatis** mengikuti sistem.
 - **Mandala geometris** berlapis yang berputar di hero, digambar secara
@@ -208,11 +221,40 @@ assets/js/store.js         Preferensi, markah, riwayat bacaan, tema
 assets/js/player.js        Pembungkus <audio>: transport + Media Session
 assets/js/fx.js            Kanvas bintang, mandala, reveal, toast, formatter
 data/surah.json            Index 114 surat (nama, arti, jumlah ayat, ringkasan)
+manifest.webmanifest       Identitas aplikasi: nama, ikon, warna, pintasan
+sw.js                      Service worker: cache kerangka + offline
+icons/                     Ikon 192/512/maskable/apple (hasil generate)
 server.mjs                 Server statis tanpa dependensi
 vercel.json                Konfigurasi deploy: preset, cache, header keamanan
 .vercelignore / .gitignore Berkas yang tidak ikut deploy / tidak ikut di-commit
-tools/                     Skrip build data + tiga suite verifikasi
+tools/                     Skrip build aset + tiga suite verifikasi
 ```
+
+### Ikon
+
+Ikon **digenerate**, bukan disimpan sebagai berkas biner misterius:
+
+```bash
+npm run icons        # node tools/make-icons.mjs
+```
+
+`tools/make-icons.mjs` menggambar bintang khatim delapan yang sama dengan logo
+aplikasi, lalu meng-encode PNG-nya sendiri di atas `zlib` bawaan Node — tanpa
+library gambar. Varian *maskable* mengecilkan gambarnya agar tidak terpotong
+masker adaptif Android (lingkaran, squircle, kotak membulat).
+
+### Catatan service worker
+
+- **Kerangka aplikasi memakai network-first.** Nama berkas di sini tidak memuat
+  content hash, jadi cache-first bisa mengawinkan `app.js` lama dengan
+  `index.html` baru dan merusak halaman dengan cara yang sulit dilacak.
+- **Tidak ada `skipWaiting()`.** Mengaktifkan worker baru saat halaman lama masih
+  terbuka bisa menyajikan aset yang tidak diharapkan halaman itu. Pembaruan masuk
+  saat aplikasi dibuka berikutnya.
+- API terjemahan/tafsir/tajwid memakai network-first dengan cadangan cache;
+  font dan ikon cache-first; murottal disimpan saat diputar dengan batas 60 berkas.
+- Bila registrasi gagal (mis. konteks tidak aman), aplikasi tetap berjalan normal
+  — offline adalah bonus, bukan syarat untuk membaca.
 
 ### Sumber data
 
@@ -330,6 +372,8 @@ Audit ini berguna ketika pikselnya tidak bisa diperiksa langsung.
 | Target sentuh ponsel < 36px | Tidak ada |
 | Bilah alat terlipat | Panel `display:none` tinggi 0, pegangan tetap terlihat |
 | Baris bilah di ponsel | 2 baris rata (4×72px dan 5×56px @390px; 4×64px dan 5×50px @360px), tanpa label terpotong |
+| Pemasangan | Chrome: **bisa dipasang**, tanpa installability error; manifest terbaca bersih |
+| Offline (jaringan dimatikan total) | Beranda memuat 114 surat, tema & font aktif; surat yang pernah dibuka tetap tampil |
 | Error konsol | Tidak ada |
 
 Audit ini menemukan dan memperbaiki lima hal nyata:

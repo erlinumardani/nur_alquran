@@ -150,16 +150,43 @@ const scrollCalls = [];
 globalThis.window = {
   innerHeight: 900,
   scrollY: 0,
+  isSecureContext: true,
   scrollTo(arg) { scrollCalls.push(arg); },
   addEventListener(type, fn) {
     if (!listeners.has(type)) listeners.set(type, []);
     listeners.get(type).push(fn);
   },
   removeEventListener() {},
-  matchMedia: () => ({ matches: true, addEventListener() {}, removeEventListener() {} }),
+  // Honour the query rather than always answering yes, so display-mode checks
+  // and the dark-theme check do not both come back true.
+  matchMedia: (query) => ({
+    matches: /prefers-color-scheme:\s*dark/.test(query),
+    media: query,
+    addEventListener() {},
+    removeEventListener() {},
+  }),
   IntersectionObserver: class { observe() {} unobserve() {} disconnect() {} },
 };
 globalThis.IntersectionObserver = globalThis.window.IntersectionObserver;
+
+// Navigator is a read-only accessor in Node, so it is replaced wholesale to give
+// the app the pieces it feature-detects.
+const swRegistrations = [];
+Object.defineProperty(globalThis, 'navigator', {
+  configurable: true,
+  writable: true,
+  value: {
+    userAgent: 'node-test',
+    platform: 'Win32',
+    maxTouchPoints: 0,
+    serviceWorker: {
+      register: async (url) => { swRegistrations.push(url); return {}; },
+    },
+  },
+});
+
+// Browsers expose navigator on window too; keep the shim faithful.
+globalThis.window.navigator = globalThis.navigator;
 // Assigning location.hash in a browser fires hashchange; mirror that so the
 // router is exercised by navigation the way it actually happens.
 let currentHash = '';
@@ -413,6 +440,10 @@ const tap = (containerSel, dataset) =>
   document.querySelector(containerSel)._fire('click', {
     target: { closest: () => ({ dataset }) },
   });
+
+/** Fire a window-level event, with the members handlers expect. */
+const emitWindow = (type, extra = {}) => (listeners.get(type) ?? [])
+  .forEach((fn) => fn({ type, preventDefault() {}, stopPropagation() {}, ...extra }));
 
 const btnPlay = el('#btnPlay');
 const heroPlay = el('#heroPlay');
@@ -772,6 +803,37 @@ el('#settingsBody')._fire('click', {
 check('the settings switch expands the toolbar',
   await waitFor(() => app.getPrefs().toolbarCollapsed === false));
 check('the handle follows the settings change', barEl().classList.contains('is-collapsed') === false);
+
+/* ── Installable app ───────────────────────────────────────────────────── */
+
+const installBtn = () => document.querySelector('#btnInstall');
+
+check('the install button starts hidden before the browser offers a prompt',
+  installBtn().hidden === true);
+check('the install drawer explains the manual route',
+  el('#installState')._text.length > 10, el('#installState')._text);
+
+// Chrome hands the prompt over at a moment of its choosing.
+let promptShown = 0;
+emitWindow('beforeinstallprompt', {
+  prompt() { promptShown += 1; },
+  userChoice: Promise.resolve({ outcome: 'accepted' }),
+});
+check('the browser prompt reveals the install button', installBtn().hidden === false);
+
+installBtn()._fire('click', {});
+check('clicking it forwards the browser prompt', await waitFor(() => promptShown === 1));
+check('accepting the prompt hides the button again',
+  await waitFor(() => installBtn().hidden === true));
+
+emitWindow('appinstalled', {});
+check('the appinstalled event is handled without error', installBtn().hidden === true);
+
+// The service worker is registered on load, and only over a secure context.
+emitWindow('load', {});
+check('the service worker is registered on load',
+  await waitFor(() => swRegistrations.includes('sw.js')),
+  swRegistrations.join(', ') || 'never registered');
 
 /* ── Bookmarks view ────────────────────────────────────────────────────── */
 

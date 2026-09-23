@@ -348,6 +348,151 @@ let threw = false;
 try { await getTajwid(113); } catch { threw = true; }
 check('getTajwid rejects when the API is unreachable (caller falls back)', threw);
 
+/* ══════════════════════════════════════════════════════════════════════════
+   Part D — installable app (manifest + icons)
+   ══════════════════════════════════════════════════════════════════════════ */
+
+console.log('\nPart D — installable app');
+
+const { inflateSync } = await import('node:zlib');
+const { existsSync, statSync } = await import('node:fs');
+
+/** Minimal PNG reader: header fields plus the inflated raw scanlines. */
+function readPng(relPath) {
+  const buf = readFileSync(resolve(ROOT, relPath));
+  if (buf.readUInt32BE(0) !== 0x89504e47) throw new Error('bad PNG signature');
+  const width = buf.readUInt32BE(16);
+  const height = buf.readUInt32BE(20);
+  const bitDepth = buf[24];
+  const colorType = buf[25];
+  const idat = [];
+  for (let off = 8; off + 8 <= buf.length;) {
+    const len = buf.readUInt32BE(off);
+    const type = buf.toString('ascii', off + 4, off + 8);
+    if (type === 'IDAT') idat.push(buf.subarray(off + 8, off + 8 + len));
+    off += 12 + len;
+  }
+  return { width, height, bitDepth, colorType, raw: inflateSync(Buffer.concat(idat)) };
+}
+
+// Decoding the pixels proves the icons actually contain the intended artwork —
+// a blank or single-colour PNG would still pass a file-existence check.
+for (const [file, expected] of [
+  ['icons/icon-192.png', 192],
+  ['icons/icon-512.png', 512],
+  ['icons/maskable-192.png', 192],
+  ['icons/maskable-512.png', 512],
+  ['icons/apple-touch-icon.png', 180],
+]) {
+  try {
+    const png = readPng(file);
+    const ok = png.width === expected && png.height === expected
+      && png.bitDepth === 8 && png.colorType === 6;
+    check(`${file} is a ${expected}px RGBA PNG`, ok,
+      `${png.width}x${png.height} depth=${png.bitDepth} type=${png.colorType}`);
+
+    // Un-filter (the generator only emits filter type 0) and sample the art.
+    const stride = png.width * 4;
+    const colours = new Set();
+    let gold = 0; let green = 0; let opaque = 0;
+    for (let y = 0; y < png.height; y += 1) {
+      const rowStart = y * (stride + 1);
+      if (png.raw[rowStart] !== 0) { fail(`${file} uses an unexpected PNG filter`); break; }
+      for (let x = 0; x < png.width; x += 2) {
+        const i = rowStart + 1 + x * 4;
+        const [r, g, b, a] = [png.raw[i], png.raw[i + 1], png.raw[i + 2], png.raw[i + 3]];
+        colours.add((r << 16) | (g << 8) | b);
+        if (a > 250) opaque += 1;
+        if (r > 150 && r > g && g > b) gold += 1;
+        else if (g > r && g > 40) green += 1;
+      }
+    }
+    check(`${file} renders real artwork (not blank)`, colours.size > 200, `${colours.size} colours`);
+    check(`${file} contains the gold star`, gold > 50, `${gold} gold samples`);
+    check(`${file} contains the emerald background`, green > 50, `${green} green samples`);
+    if (file.includes('maskable') || file.includes('apple')) {
+      // Sampled every row but every second column, so the denominator must match.
+      const sampled = png.height * Math.ceil(png.width / 2);
+      check(`${file} is fully opaque (maskable/iOS requirement)`, opaque === sampled,
+        `${opaque}/${sampled} opaque`);
+    }
+  } catch (err) {
+    fail(`${file} could not be read: ${err.message}`);
+  }
+}
+
+// Maskable art must fit Android's 80% safe circle, or a circular mask crops it.
+try {
+  const png = readPng('icons/maskable-512.png');
+  const stride = png.width * 4;
+  const c = png.width / 2;
+  let maxGoldRadius = 0;
+  for (let y = 0; y < png.height; y += 1) {
+    for (let x = 0; x < png.width; x += 1) {
+      const i = y * (stride + 1) + 1 + x * 4;
+      const [r, g, b] = [png.raw[i], png.raw[i + 1], png.raw[i + 2]];
+      if (r > 150 && r > g && g > b) {
+        maxGoldRadius = Math.max(maxGoldRadius, Math.hypot(x - c, y - c));
+      }
+    }
+  }
+  const ratio = maxGoldRadius / (png.width / 2);
+  check('maskable art stays inside the safe circle', ratio <= 0.8,
+    `gold reaches ${(ratio * 100).toFixed(1)}% of the radius (limit 80%)`);
+} catch (err) {
+  fail(`maskable safe-zone check failed: ${err.message}`);
+}
+
+// Manifest.
+let manifest = null;
+try {
+  manifest = JSON.parse(readFileSync(resolve(ROOT, 'manifest.webmanifest'), 'utf8'));
+  pass('manifest.webmanifest is valid JSON');
+} catch (err) {
+  fail(`manifest.webmanifest is not valid JSON: ${err.message}`);
+}
+
+if (manifest) {
+  for (const field of ['name', 'short_name', 'start_url', 'display', 'theme_color', 'background_color']) {
+    check(`manifest declares ${field}`, Boolean(manifest[field]), String(manifest[field]));
+  }
+  check('manifest display is standalone-ish',
+    ['standalone', 'fullscreen', 'minimal-ui'].includes(manifest.display), manifest.display);
+
+  const sizes = (manifest.icons ?? []).map((i) => i.sizes);
+  check('manifest ships a 192px icon', sizes.includes('192x192'), sizes.join(' '));
+  check('manifest ships a 512px icon', sizes.includes('512x512'), sizes.join(' '));
+  check('manifest ships a maskable icon',
+    (manifest.icons ?? []).some((i) => String(i.purpose).includes('maskable')));
+
+  // Every icon the manifest promises must actually be deployed.
+  const missing = (manifest.icons ?? []).filter((i) => !existsSync(resolve(ROOT, i.src)));
+  check('every manifest icon exists on disk', missing.length === 0,
+    missing.map((i) => i.src).join(', '));
+  const huge = (manifest.icons ?? []).filter((i) => statSync(resolve(ROOT, i.src)).size > 200 * 1024);
+  check('manifest icons are reasonably small', huge.length === 0,
+    huge.map((i) => i.src).join(', '));
+}
+
+// The shell must reference the manifest and the iOS equivalents.
+const indexHtml = read('index.html');
+check('index.html links the manifest', /rel="manifest" href="manifest\.webmanifest"/.test(indexHtml));
+check('index.html declares an apple-touch-icon',
+  /rel="apple-touch-icon"[^>]*href="icons\/apple-touch-icon\.png"/.test(indexHtml));
+check('index.html marks the app as web-app-capable',
+  /name="mobile-web-app-capable"/.test(indexHtml) && /name="apple-mobile-web-app-capable"/.test(indexHtml));
+
+// Service worker hygiene: a syntax error here breaks the whole app silently.
+const sw = read('sw.js');
+check('service worker is valid JavaScript', (() => {
+  try { new Function(sw); return true; } catch { return false; }
+})());
+check('service worker precaches the app shell',
+  /index\.html/.test(sw) && /assets\/js\/app\.js/.test(sw) && /assets\/css\/styles\.css/.test(sw));
+check('service worker never caches its own script',
+  !/['"]\/?sw\.js['"]/.test(sw.replace(/CACHE_VERSION[\s\S]{0,80}/, '')) || !/caches?\.put\([^)]*sw\.js/.test(sw));
+check('service worker clears old caches on activate', /caches\.delete/.test(sw));
+
 /* ── Summary ───────────────────────────────────────────────────────────── */
 
 console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`);

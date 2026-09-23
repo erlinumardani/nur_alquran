@@ -69,6 +69,8 @@ async function boot() {
   bindPlayerUI();
   renderSettings();
   bindRouter();
+  setupInstall();
+  setupServiceWorker();
 
   try {
     state.index = await loadIndex();
@@ -982,6 +984,84 @@ function chooseReciter(id) {
   const q = state.queue;
   if (!q) return;
   playAyah(q.nomor, q.ayah);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Installable app
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** True when the page is already running as an installed app. */
+function isStandalone() {
+  return window.matchMedia?.('(display-mode: standalone)').matches === true
+    || window.matchMedia?.('(display-mode: minimal-ui)').matches === true
+    // iOS Safari only exposes this on navigator, and only when installed.
+    || window.navigator?.standalone === true;
+}
+
+const isIos = () => /iphone|ipad|ipod/i.test(navigator.userAgent)
+  || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+function setupInstall() {
+  const btn = $('#btnInstall');
+  if (!btn) return;
+
+  const standalone = isStandalone();
+
+  // The button owns its own visibility: hidden until the browser offers a
+  // prompt, except on iOS where Safari never fires one and the manual
+  // instructions are the only route. Already installed means never shown.
+  btn.hidden = standalone || !isIos();
+
+  // Chrome hands us the install prompt so it can be shown at a chosen moment.
+  let deferred = null;
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferred = e;
+    if (!standalone) btn.hidden = false;
+  });
+
+  window.addEventListener('appinstalled', () => {
+    deferred = null;
+    btn.hidden = true;
+    toast('Aplikasi terpasang. Selamat membaca!', '\u06DE');
+  });
+
+  btn.addEventListener('click', async () => {
+    if (deferred) {
+      try {
+        deferred.prompt();
+        const { outcome } = await deferred.userChoice;
+        deferred = null;
+        if (outcome === 'accepted') btn.hidden = true;
+        return;
+      } catch {
+        // The prompt can only be shown once and only from a real user gesture.
+        // If the browser refuses, fall through to the manual instructions
+        // rather than leaving the reader with a button that does nothing.
+        deferred = null;
+      }
+    }
+    openDrawer('drawerInstall');
+  });
+
+  $('#installState').textContent = standalone
+    ? 'Aplikasi sedang berjalan dalam mode terpasang.'
+    : (isIos()
+      ? 'Ikuti langkah di bawah untuk memasang.'
+      : 'Buka menu peramban lalu pilih "Pasang aplikasi".');
+}
+
+/** Registers the service worker; the app works without it, so failure is soft. */
+function setupServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  // Registration only succeeds on a secure context, which file:// is not.
+  if (!window.isSecureContext) return;
+
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(() => {
+      /* offline support is a bonus, never a requirement to read */
+    });
+  });
 }
 
 /* ══════════════════════════════════════════════════════════════════════════

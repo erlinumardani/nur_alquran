@@ -30,6 +30,12 @@
   --tr-size: 1rem;
 
   --topbar-h: 68px;
+
+  /* Installed (standalone) mode has to clear notches and the home indicator.
+     These resolve to 0px in a normal browser tab, so they cost nothing there. */
+  --sai-top: env(safe-area-inset-top, 0px);
+  --sai-bottom: env(safe-area-inset-bottom, 0px);
+  --topbar-total: calc(var(--topbar-h) + var(--sai-top));
   --shell: min(1240px, 100% - 2.5rem);
 
   --shadow-sm: 0 2px 10px rgb(0 0 0 / .18);
@@ -289,6 +295,7 @@ p { text-wrap: pretty; }
   position: fixed;
   inset: 0 0 auto;
   z-index: 60;
+  padding-top: var(--sai-top);
   backdrop-filter: blur(18px) saturate(150%);
   -webkit-backdrop-filter: blur(18px) saturate(150%);
   background: color-mix(in srgb, var(--bg-0) 72%, transparent);
@@ -435,11 +442,11 @@ html[data-theme="light"] .icon--moon { opacity: 0; transform: rotate(90deg) scal
 main {
   width: var(--shell);
   margin-inline: auto;
-  padding-top: calc(var(--topbar-h) + 1.6rem);
-  padding-bottom: 5rem;
+  padding-top: calc(var(--topbar-total) + 1.6rem);
+  padding-bottom: calc(5rem + var(--sai-bottom));
   transition: padding-bottom .4s var(--ease);
 }
-body.has-player main { padding-bottom: 9.5rem; }
+body.has-player main { padding-bottom: calc(9.5rem + var(--sai-bottom)); }
 
 .view { display: none; }
 .view--active { display: block; animation: view-in .6s var(--ease-out); }
@@ -887,7 +894,7 @@ html[data-theme="light"] .surah-card__no span { color: var(--gold-3); }
 /* ── 15. Toolbar ───────────────────────────────────────────────────────── */
 .reader-toolbar {
   position: sticky;
-  top: calc(var(--topbar-h) + 6px);
+  top: calc(var(--topbar-total) + 6px);
   z-index: 40;
   display: flex;
   align-items: center;
@@ -1286,6 +1293,7 @@ html[data-theme="light"] .ayah__latin { color: var(--emerald-2); }
   position: fixed;
   inset: auto 0 0;
   z-index: 70;
+  padding-bottom: var(--sai-bottom);
   border-top: 1px solid var(--line);
   background: color-mix(in srgb, var(--bg-0) 88%, transparent);
   backdrop-filter: blur(22px) saturate(160%);
@@ -1482,12 +1490,12 @@ html[data-theme="light"] .ayah__latin { color: var(--emerald-2); }
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
-  padding: 1.2rem 1.3rem;
+  padding: calc(1.2rem + var(--sai-top)) 1.3rem 1.2rem;
   border-bottom: 1px solid var(--line-soft);
 }
 .drawer__title { font-size: 1.05rem; font-weight: 800; }
 .drawer__sub { font-size: .76rem; color: var(--text-mute); margin-top: .1rem; }
-.drawer__body { flex: 1; overflow-y: auto; padding: 1.3rem; overscroll-behavior: contain; }
+.drawer__body { flex: 1; overflow-y: auto; padding: 1.3rem 1.3rem calc(1.3rem + var(--sai-bottom)); overscroll-behavior: contain; }
 
 .set-row {
   display: flex;
@@ -1608,7 +1616,7 @@ html[data-theme="light"] .ayah__latin { color: var(--emerald-2); }
 .toasts {
   position: fixed;
   left: 50%;
-  bottom: 96px;
+  bottom: calc(96px + var(--sai-bottom));
   translate: -50% 0;
   z-index: 120;
   display: flex;
@@ -2019,7 +2027,7 @@ html[data-tajwid="on"] .ayah.is-active .ayah__arab { color: var(--text); }
   .ayah { grid-template-columns: 1fr; padding: 1.1rem; }
   .ayah__rail { flex-direction: row; justify-content: space-between; align-items: center; }
   .ayah__acts { flex-direction: row; }
-  .reader-toolbar { top: calc(var(--topbar-h) + 4px); border-radius: var(--radius); }
+  .reader-toolbar { top: calc(var(--topbar-total) + 4px); border-radius: var(--radius); }
 
   /* A wrapped flex row left the toolbar ragged on phones (a lone 2-button line,
      then uneven 4 and 3 button lines). Two explicit, equal-column rows instead:
@@ -2061,7 +2069,7 @@ html[data-tajwid="on"] .ayah.is-active .ayah__arab { color: var(--text); }
   .player__right { margin-left: 0; }
   .reader-foot { flex-direction: column; }
   .foot-nav { width: 100%; }
-  .toasts { bottom: 150px; }
+  .toasts { bottom: calc(150px + var(--sai-bottom)); }
   .surah-hero__desc { text-align: left; }
 
   /* Touch targets: controls that are comfortable under a mouse pointer are too
@@ -2080,6 +2088,47 @@ html[data-tajwid="on"] .ayah.is-active .ayah__arab { color: var(--text); }
   .chip { padding: .5rem 1rem; }
   .seg { padding: .58rem 1.15rem; }
 }
+
+/* ── Install instructions ──────────────────────────────────────────────── */
+
+.install-state {
+  padding: .8rem 1rem;
+  margin-bottom: 1.2rem;
+  font-size: .84rem;
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: radial-gradient(120% 130% at 90% 0%, rgb(217 178 95 / .12), transparent 60%), var(--surface);
+}
+.install-mark {
+  display: grid;
+  place-items: center;
+  margin-bottom: 1.4rem;
+}
+.install-mark img {
+  border-radius: 22%;
+  box-shadow: var(--shadow);
+}
+.install-steps {
+  margin: 0 0 1rem;
+  padding-left: 1.3rem;
+  font-size: .85rem;
+  line-height: 1.9;
+  color: var(--text-dim);
+}
+.install-steps--bullets { list-style: none; padding-left: 0; }
+.install-steps--bullets li {
+  position: relative;
+  padding-left: 1.2rem;
+  margin-bottom: .4rem;
+}
+.install-steps--bullets li::before {
+  content: "۞";
+  position: absolute;
+  left: 0;
+  color: var(--gold-2);
+}
+.install-steps strong { color: var(--text); }
 
 /* ── 26. Accessibility ─────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
