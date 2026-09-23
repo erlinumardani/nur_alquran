@@ -91,6 +91,13 @@ Catatan penting tentang konfigurasi:
 - **Lompat ke ayat**: panel pemilih berisi kotak nomor dan kisi nomor ayat —
   ketik nomornya atau ketuk salah satu. Ayat yang dituju langsung digulirkan dan
   diberi kilau emas sebagai penanda mendarat.
+- **Bilah alat bisa dilipat**: tombol pegangan mengecilkan bilah baca (A−/A+,
+  transliterasi, tajwid, tafsir, lompat ayat, ke atas) menjadi satu pegangan
+  kecil, sehingga layar lebih lapang. Pegangannya tetap terlihat dan bisa diklik
+  untuk membuka kembali, dan pilihannya tersimpan.
+- **Bilah baca rapi di ponsel**: dua baris grid dengan kolom sama lebar —
+  navigasi (ikon saja) di atas, pilihan tampilan (berlabel) di bawah — bukan
+  baris flex yang membungkus tidak beraturan.
 - **Rujukan ayat langsung** dari pencarian: tulis `2:255` (atau `2.255`, `2 255`)
   lalu Enter.
 - **Penanda progres baca** di bilah atas dan *scroll spy* yang mengingat ayat
@@ -300,11 +307,13 @@ Tunggu baris `DevTools listening on ws://127.0.0.1:9222/...`, lalu:
 npm run visual          # atau: node tools/visual.mjs
 ```
 
-Sembilan tangkapan layar (beranda & pembaca, tema gelap/terang, tajwid
-nyala/mati, desktop & ponsel) ditulis ke `.visual/` bersama `report.json`.
+Sebelas tangkapan layar (beranda, pembaca, markah; tema gelap/terang; tajwid
+nyala/mati; bilah terlipat; desktop 1440px serta ponsel 390px dan 360px) ditulis
+ke `.visual/` bersama `report.json`.
 
 Setiap tangkapan juga melewati **audit tata letak**: overflow horizontal, ukuran
-target sentuh, arah dan posisi tooltip, serta apakah webfont benar-benar termuat.
+target sentuh, arah dan posisi tooltip, apakah webfont benar-benar termuat, dan
+bagaimana bilah baca membungkus menjadi baris.
 Audit ini berguna ketika pikselnya tidak bisa diperiksa langsung.
 
 > Kalau Chrome langsung keluar, ia menyerahkan command line ke Chrome yang sudah
@@ -319,11 +328,19 @@ Audit ini berguna ketika pikselnya tidak bisa diperiksa langsung.
 | Overflow horizontal | Tidak ada, di semua lebar layar |
 | Tooltip di luar layar | 0 dari 92 |
 | Target sentuh ponsel < 36px | Tidak ada |
+| Bilah alat terlipat | Panel `display:none` tinggi 0, pegangan tetap terlihat |
+| Baris bilah di ponsel | 2 baris rata (4×72px dan 5×56px @390px; 4×64px dan 5×50px @360px), tanpa label terpotong |
 | Error konsol | Tidak ada |
 
-Audit ini menemukan dan memperbaiki tiga hal nyata: tombol aksi ayat hanya
-32×32px dan tombol bilah baca 31px pada ponsel (kini ≥ 40px), serta tooltip
-tombol aksi ayat yang terbuka ke bawah sehingga terpotong di tepi layar.
+Audit ini menemukan dan memperbaiki lima hal nyata:
+
+1. Tombol aksi ayat hanya 32×32px dan tombol bilah baca 31px pada ponsel (kini ≥ 40px).
+2. Tooltip tombol aksi ayat terbuka ke bawah sehingga terpotong di tepi layar.
+3. **Bilah baca ponsel membungkus jadi tiga baris tidak rata** (2/4/3 tombol,
+   lebar 47–74px) — kini dua baris grid dengan kolom sama lebar.
+4. Kolom grid tidak benar-benar rata karena `1fr` tidak bisa menyusut di bawah
+   lebar min-content label; diperbaiki dengan `minmax(0, 1fr)`.
+5. Label "Aa Latin" diperpendek jadi "Latin" agar muat di kolom seperlima.
 
 > Catatan: agen yang menjalankan audit ini memakai model tanpa input gambar, jadi
 > ia **tidak bisa melihat** PNG-nya — verifikasi dilakukan lewat pengukuran

@@ -14,6 +14,7 @@ export const DEFAULT_PREFS = {
   showLatin: true,      // transliteration under each ayah
   showTafsir: false,    // inline tafsir under each ayah
   tajwid: true,         // colour the Arabic by tajwid rule
+  toolbarCollapsed: false,  // reader toolbar folded away for a cleaner page
   reciter: '05',
   autoplayNext: true,   // continue to the next ayah automatically
   loopAyah: false,

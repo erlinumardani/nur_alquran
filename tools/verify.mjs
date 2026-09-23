@@ -100,10 +100,25 @@ const structure = [
   ['all local assets referenced by index.html exist',
     missingAssets.length === 0, missingAssets.join(', ')],
   ['all views present', ['view-home', 'view-reader', 'view-bookmarks'].every((v) => html.includes(`id="${v}"`))],
-  ['all drawers present', ['drawerTafsir', 'drawerSettings', 'drawerReciter'].every((d) => html.includes(`id="${d}"`))],
+  ['all drawers present', ['drawerTafsir', 'drawerSettings', 'drawerReciter', 'drawerAyah'].every((d) => html.includes(`id="${d}"`))],
   ['module entry declared', /<script type="module" src="assets\/js\/app\.js">/.test(html)],
   ['no leftover template placeholder', !/\{\{[a-z]+\}\}/i.test(html)],
 ];
+
+// Unbalanced container tags are the classic way to silently break a layout, so
+// the structural tags are counted rather than trusted.
+console.log('\n  Markup balance');
+for (const tag of ['div', 'section', 'aside', 'nav', 'header', 'main', 'form', 'button', 'ul', 'li', 'details']) {
+  const opens = (html.match(new RegExp(`<${tag}\\b`, 'gi')) ?? []).length;
+  const closes = (html.match(new RegExp(`</${tag}>`, 'gi')) ?? []).length;
+  if (opens === closes) pass(`<${tag}> balanced (${opens})`);
+  else fail(`<${tag}> unbalanced: ${opens} open vs ${closes} close`);
+}
+// Void elements must never be written with a closing tag.
+for (const tag of ['input', 'img', 'br', 'hr', 'meta', 'link']) {
+  if (new RegExp(`</${tag}>`, 'i').test(html)) fail(`</${tag}> is not valid (void element)`);
+}
+pass('void elements have no closing tags');
 console.log('\n  Structure');
 structure.forEach(([label, ok, detail]) => (ok ? pass(label) : fail(`${label} — ${detail}`)));
 

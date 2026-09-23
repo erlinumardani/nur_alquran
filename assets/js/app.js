@@ -60,6 +60,7 @@ const BADGE_44 = starPolygon(44, 8, 0.46, 0.2, 22.5);
 async function boot() {
   applyTheme();
   applyTajwidMode();
+  applyToolbarState();
   buildMandala($('#mandala'));
   starfield = initStarfield();
   renderHijriDate($('#hijriText'));
@@ -457,6 +458,24 @@ function applyTextScales() {
 /** Expose the colouring state to CSS (it changes how the active ayah is tinted). */
 function applyTajwidMode() {
   document.documentElement.dataset.tajwid = getPrefs().tajwid ? 'on' : 'off';
+}
+
+/**
+ * Fold the reader toolbar down to its handle. The handle stays visible and
+ * clickable, so the way back is never the thing that was just hidden.
+ */
+function applyToolbarState() {
+  const collapsed = getPrefs().toolbarCollapsed;
+  const bar = $('#readerToolbar');
+  const handle = $('#btnToggleToolbar');
+  if (!bar || !handle) return;
+
+  bar.classList.toggle('is-collapsed', collapsed);
+  handle.setAttribute('aria-expanded', String(!collapsed));
+  handle.setAttribute(
+    'aria-label',
+    collapsed ? 'Tampilkan bilah alat' : 'Sembunyikan bilah alat',
+  );
 }
 
 /** Re-render just the Arabic lines, keeping scroll position and audio untouched. */
@@ -1063,6 +1082,10 @@ function renderSettings() {
 
     <p class="set-section">Bacaan</p>
     <div class="set-row">
+      <span class="set-row__label"><strong>Sembunyikan bilah alat</strong><small>Lipat bilah baca jadi pegangan kecil</small></span>
+      <button class="switch" role="switch" aria-checked="${p.toolbarCollapsed}" data-toggle="toolbarCollapsed" aria-label="Sembunyikan bilah alat"></button>
+    </div>
+    <div class="set-row">
       <span class="set-row__label"><strong>Transliterasi latin</strong><small>Tampilkan bacaan latin</small></span>
       <button class="switch" role="switch" aria-checked="${p.showLatin}" data-toggle="showLatin" aria-label="Transliterasi latin"></button>
     </div>
@@ -1130,6 +1153,7 @@ function bindSettingsEvents() {
       if (key === 'showLatin') $$('.ayah__latin').forEach((el) => (el.hidden = !on));
       if (key === 'showTafsir') refreshTafsirPanels(on);
       if (key === 'tajwid') { applyTajwidMode(); refreshTajwid(); }
+      if (key === 'toolbarCollapsed') applyToolbarState();
       return;
     }
 
@@ -1380,6 +1404,11 @@ function bindGlobalUI() {
   });
 
   // Reader toolbar
+  $('#btnToggleToolbar').addEventListener('click', () => {
+    const collapsed = !getPrefs().toolbarCollapsed;
+    setPref('toolbarCollapsed', collapsed);
+    applyToolbarState();
+  });
   $('#btnAyahJump').addEventListener('click', openAyahJump);
   $('#ayahJumpForm').addEventListener('submit', (e) => {
     e.preventDefault();

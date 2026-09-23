@@ -170,6 +170,12 @@ async function goto(cdp, sessionId, url, settle = 3000) {
   await sleep(settle);   // let fonts, animation frames and API calls settle
 }
 
+/** Drive the page the way a reader would, for shots that need an interaction. */
+async function interact(cdp, sessionId, expression, settle = 800) {
+  await evaluate(cdp, sessionId, expression);
+  await sleep(settle);
+}
+
 async function shoot(cdp, sessionId, name) {
   const { data } = await cdp.send('Page.captureScreenshot', {
     format: 'png', captureBeyondViewport: true,
@@ -267,6 +273,56 @@ const AUDIT = `(() => {
   });
   out.tooltipsOutside = out.tooltips.filter((t) => t.outside).length;
 
+  // Reader toolbar geometry: how it wraps, and whether any label is clipped.
+  const bar = document.querySelector('#readerToolbar');
+  out.toolbar = null;
+  if (bar && !bar.classList.contains('is-collapsed') && !bar.hidden) {
+    // Tooltips are absolutely positioned but still inflate scrollWidth, which
+    // would read as "label clipped". Detach them for the measurement only.
+    const tipAttrs = [];
+    bar.querySelectorAll('[data-tip]').forEach((el) => {
+      tipAttrs.push([el, el.getAttribute('data-tip')]);
+      el.removeAttribute('data-tip');
+    });
+
+    const boxes = [...bar.querySelectorAll('.tool-btn')].map((b) => {
+      const r = b.getBoundingClientRect();
+      return {
+        top: r.top,
+        bottom: r.bottom,
+        w: Math.round(r.width),
+        label: (b.textContent || '').trim().slice(0, 12),
+        clipped: b.scrollWidth > b.clientWidth + 2,
+      };
+    }).filter((b) => b.bottom - b.top >= 1);
+
+    // Cluster into rows by vertical overlap. Grouping on an exact top value
+    // would split one visual row whenever its buttons differ in height.
+    const rows = [];
+    boxes.sort((a, b) => a.top - b.top).forEach((box) => {
+      const row = rows.find((r) => box.top < r.bottom - 2 && box.bottom > r.top + 2);
+      if (row) {
+        row.items.push(box);
+        row.top = Math.min(row.top, box.top);
+        row.bottom = Math.max(row.bottom, box.bottom);
+      } else {
+        rows.push({ top: box.top, bottom: box.bottom, items: [box] });
+      }
+    });
+
+    out.toolbar = rows.map((row) => {
+      const widths = row.items.map((x) => x.w);
+      return {
+        count: row.items.length,
+        widths,
+        even: Math.max(...widths) - Math.min(...widths) <= 2,
+        clipped: row.items.filter((x) => x.clipped).map((x) => x.label),
+      };
+    });
+
+    tipAttrs.forEach(([el, value]) => el.setAttribute('data-tip', value));
+  }
+
   return out;
 })()`;
 
@@ -285,7 +341,19 @@ const SHOTS = [
   { name: '06-reader-long-surah', prefs: DARK, width: 1440, height: 1000, path: '#/surat/36' },
   { name: '07-mobile-home', prefs: DARK, width: 390, height: 844, scale: 3, path: '#/' },
   { name: '08-mobile-reader', prefs: DARK, width: 390, height: 844, scale: 3, path: '#/surat/112' },
+  // Narrowest common phone: the 5-column reading row is the tight case here.
+  { name: '08b-mobile-small', prefs: DARK, width: 360, height: 780, scale: 3, path: '#/surat/112' },
   { name: '09-markah', prefs: DARK, width: 1440, height: 900, path: '#/markah' },
+  // Exercises the folded toolbar end to end: the click is real, and the panel's
+  // computed display is read back from the live layout.
+  {
+    name: '10-toolbar-collapsed',
+    prefs: DARK,
+    width: 1440,
+    height: 900,
+    path: '#/surat/112',
+    after: "document.querySelector('#btnToggleToolbar').click()",
+  },
 ];
 
 /* ── Run ───────────────────────────────────────────────────────────────── */
@@ -309,10 +377,14 @@ const report = [];
 for (const shot of SHOTS) {
   const { sessionId, targetId, log } = await openPage(cdp, shot);
   await goto(cdp, sessionId, `${BASE}/${shot.path}`);
+  if (shot.after) await interact(cdp, sessionId, shot.after);
 
   const health = await evaluate(cdp, sessionId, `(() => {
     const t = document.querySelector('tajweed');
     const arab = document.querySelector('.ayah__arab');
+    const bar = document.querySelector('#readerToolbar');
+    const panel = document.querySelector('#toolbarPanel');
+    const handle = document.querySelector('#btnToggleToolbar');
     return {
       title: document.title,
       ayahs: document.querySelectorAll('.ayah').length,
@@ -323,6 +395,11 @@ for (const shot of SHOTS) {
       theme: document.documentElement.dataset.theme,
       tajwidMode: document.documentElement.dataset.tajwid,
       legend: !!document.querySelector('.tajwid-legend'),
+      toolbarCollapsed: bar ? bar.classList.contains('is-collapsed') : null,
+      panelDisplay: panel ? getComputedStyle(panel).display : null,
+      panelHeight: panel ? Math.round(panel.getBoundingClientRect().height) : null,
+      handleVisible: handle ? handle.getBoundingClientRect().height > 0 : null,
+      handleExpanded: handle ? handle.getAttribute('aria-expanded') : null,
       quranApiCalls: performance.getEntriesByType('resource')
         .filter(r => r.name.includes('api.quran.com')).length,
     };
@@ -416,6 +493,40 @@ console.log(tipsOut.length
   : `  Semua ${tips.length} tooltip akan terbuka di dalam layar.`);
 [...new Set(tipsOut.map((t) => `${t.shot}: ${t.el} (${t.dir})`))].slice(0, 8)
   .forEach((s) => console.log(`    ${s}`));
+
+// The collapsible toolbar is CSS-driven, so only the live layout can confirm it.
+const bars = report.filter((r) => r.toolbarCollapsed !== null);
+const folded = bars.filter((r) => r.toolbarCollapsed);
+const unfolded = bars.filter((r) => !r.toolbarCollapsed);
+console.log('\nBilah alat');
+console.log(`  ${unfolded.length} tangkapan terbuka, ${folded.length} terlipat.`);
+folded.forEach((r) => {
+  console.log(`  ${r.shot}: panel display=${r.panelDisplay}, tinggi=${r.panelHeight}px,`
+    + ` aria-expanded=${r.handleExpanded}`);
+});
+if (folded.length) {
+  const bad = folded.filter((r) => r.panelDisplay !== 'none' || r.panelHeight !== 0);
+  console.log(bad.length
+    ? `  MASALAH: panel masih tampil di ${bad.map((r) => r.shot).join(', ')}`
+    : '  Panel benar-benar tersembunyi (display:none, tinggi 0).');
+  const handleGone = folded.filter((r) => r.handleVisible !== true);
+  console.log(handleGone.length
+    ? `  MASALAH: pegangan ikut hilang di ${handleGone.map((r) => r.shot).join(', ')}`
+    : '  Pegangan tetap terlihat dan bisa diklik saat terlipat.');
+  const notNone = unfolded.filter((r) => r.panelDisplay === 'none');
+  if (notNone.length) console.log(`  MASALAH: panel tersembunyi padahal seharusnya terbuka di ${notNone.map((r) => r.shot).join(', ')}`);
+}
+
+console.log('\nTata letak bilah (baris)');
+report.filter((r) => r.audit?.toolbar).forEach((r) => {
+  const rows = r.audit.toolbar;
+  console.log(`  ${r.shot} — ${rows.length} baris`);
+  rows.forEach((row, i) => {
+    console.log(`    baris ${i + 1}: ${row.count} tombol, lebar ${row.widths.join('/')}`
+      + `${row.even ? ' (rata)' : ' (TIDAK RATA)'}`
+      + `${row.clipped.length ? ` TERPOTONG: ${row.clipped.join(', ')}` : ''}`);
+  });
+});
 
 if (corsFailures.length) console.log(`\nKegagalan CORS: ${JSON.stringify(corsFailures.slice(0, 3))}`);
 console.log(allErrors.length

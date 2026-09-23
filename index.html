@@ -144,31 +144,39 @@
     <div class="reader-head" id="readerHead"></div>
 
     <div class="reader-toolbar" id="readerToolbar" hidden>
-      <div class="toolbar__group">
-        <button class="tool-btn" id="btnPrevSurah" type="button" data-tip="Surat sebelumnya">
-          <svg viewBox="0 0 24 24" class="icon" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg>
-          <span>Sebelumnya</span>
-        </button>
-        <button class="tool-btn" id="btnNextSurah" type="button" data-tip="Surat berikutnya">
-          <span>Berikutnya</span>
-          <svg viewBox="0 0 24 24" class="icon" aria-hidden="true"><path d="m10 6 6 6-6 6"/></svg>
-        </button>
-      </div>
-      <div class="toolbar__group toolbar__group--right">
-        <button class="tool-btn" id="btnAyahJump" type="button" aria-label="Lompat ke ayat" data-tip="Lompat ke ayat">
-          <svg viewBox="0 0 24 24" class="icon" aria-hidden="true"><path d="M4 6h2M4 12h2M4 18h2M10 6h10M10 12h10M10 18h10"/></svg>
-        </button>
-        <button class="tool-btn" id="btnFontDown" type="button" aria-label="Perkecil huruf" data-tip="Perkecil teks">A−</button>
-        <button class="tool-btn" id="btnFontUp" type="button" aria-label="Perbesar huruf" data-tip="Perbesar teks">A+</button>
-        <button class="tool-btn is-on" id="btnToggleLatin" type="button" data-tip="Transliterasi latin">Aa Latin</button>
-        <button class="tool-btn is-on" id="btnToggleTajwid" type="button" data-tip="Warna hukum tajwid">
-          <span class="tajwid-dot" aria-hidden="true"></span>
-          <span>Tajwid</span>
-        </button>
-        <button class="tool-btn is-on" id="btnToggleTafsir" type="button" data-tip="Tafsir ringkas">Tafsir</button>
-        <button class="tool-btn" id="btnTop" type="button" data-tip="Ke atas">
-          <svg viewBox="0 0 24 24" class="icon" aria-hidden="true"><path d="m6 14 6-6 6 6"/></svg>
-        </button>
+      <button class="toolbar__handle" id="btnToggleToolbar" type="button"
+              aria-expanded="true" aria-controls="toolbarPanel" aria-label="Sembunyikan bilah alat"
+              data-tip="Sembunyikan / tampilkan bilah">
+        <svg viewBox="0 0 24 24" class="icon" aria-hidden="true"><path d="m6 10 6 6 6-6"/></svg>
+      </button>
+
+      <div class="toolbar__panel" id="toolbarPanel">
+        <div class="toolbar__group toolbar__group--nav">
+          <button class="tool-btn" id="btnPrevSurah" type="button" data-tip="Surat sebelumnya">
+            <svg viewBox="0 0 24 24" class="icon" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg>
+            <span>Sebelumnya</span>
+          </button>
+          <button class="tool-btn" id="btnNextSurah" type="button" data-tip="Surat berikutnya">
+            <span>Berikutnya</span>
+            <svg viewBox="0 0 24 24" class="icon" aria-hidden="true"><path d="m10 6 6 6-6 6"/></svg>
+          </button>
+          <button class="tool-btn" id="btnAyahJump" type="button" aria-label="Lompat ke ayat" data-tip="Lompat ke ayat">
+            <svg viewBox="0 0 24 24" class="icon" aria-hidden="true"><path d="M4 6h2M4 12h2M4 18h2M10 6h10M10 12h10M10 18h10"/></svg>
+          </button>
+          <button class="tool-btn" id="btnTop" type="button" aria-label="Ke atas" data-tip="Ke atas">
+            <svg viewBox="0 0 24 24" class="icon" aria-hidden="true"><path d="m6 14 6-6 6 6"/></svg>
+          </button>
+        </div>
+        <div class="toolbar__group toolbar__group--display">
+          <button class="tool-btn" id="btnFontDown" type="button" aria-label="Perkecil huruf" data-tip="Perkecil teks">A−</button>
+          <button class="tool-btn" id="btnFontUp" type="button" aria-label="Perbesar huruf" data-tip="Perbesar teks">A+</button>
+          <button class="tool-btn is-on" id="btnToggleLatin" type="button" data-tip="Transliterasi latin">Latin</button>
+          <button class="tool-btn is-on" id="btnToggleTajwid" type="button" data-tip="Warna hukum tajwid">
+            <span class="tajwid-dot" aria-hidden="true"></span>
+            <span>Tajwid</span>
+          </button>
+          <button class="tool-btn is-on" id="btnToggleTafsir" type="button" data-tip="Tafsir ringkas">Tafsir</button>
+        </div>
       </div>
     </div>
 

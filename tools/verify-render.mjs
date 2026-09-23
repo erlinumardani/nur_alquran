@@ -725,6 +725,54 @@ check('a cross-surah jump renders the target surah',
 check('the cross-surah jump flashes the landed ayah',
   document.querySelector('.ayah[data-ayah="3"]').classList.contains('is-flash'));
 
+/* ── Collapsible reader toolbar ────────────────────────────────────────── */
+
+const barEl = () => document.querySelector('#readerToolbar');
+const handleEl = () => document.querySelector('#btnToggleToolbar');
+
+// Normalise: whatever an earlier test left behind, start expanded. setPref is
+// synchronous, so one tap is enough.
+if (app.getPrefs().toolbarCollapsed) tap('#btnToggleToolbar', {});
+check('the toolbar starts expanded', !barEl().classList.contains('is-collapsed'));
+check('the handle reports expanded state', handleEl().getAttribute('aria-expanded') === 'true');
+
+tap('#btnToggleToolbar', {});
+check('clicking the handle collapses the toolbar',
+  await waitFor(() => app.getPrefs().toolbarCollapsed === true));
+check('the collapsed class is applied', barEl().classList.contains('is-collapsed'));
+check('the handle reports collapsed state', handleEl().getAttribute('aria-expanded') === 'false');
+check('the handle relabels itself for screen readers',
+  handleEl().getAttribute('aria-label') === 'Tampilkan bilah alat',
+  handleEl().getAttribute('aria-label'));
+check('the toolbar itself stays visible so the handle remains clickable',
+  barEl().hidden === false);
+
+// The way back must not be inside the thing that got hidden.
+const handleIdx = indexHtml.indexOf('id="btnToggleToolbar"');
+const panelIdx = indexHtml.indexOf('id="toolbarPanel"');
+check('the handle is marked up before the panel it hides',
+  handleIdx > -1 && panelIdx > -1 && handleIdx < panelIdx,
+  `handle@${handleIdx} panel@${panelIdx}`);
+
+tap('#btnToggleToolbar', {});
+check('clicking again expands the toolbar',
+  await waitFor(() => app.getPrefs().toolbarCollapsed === false));
+check('the collapsed class is removed', !barEl().classList.contains('is-collapsed'));
+
+// The choice has to survive a reload, which means it has to be in the prefs.
+tap('#btnToggleToolbar', {});
+await waitFor(() => app.getPrefs().toolbarCollapsed === true);
+check('the collapsed state persists to storage',
+  JSON.parse(store.get('nur:prefs')).toolbarCollapsed === true);
+
+// The settings switch drives the same preference.
+el('#settingsBody')._fire('click', {
+  target: { closest: (sel) => (sel === '[data-toggle]' ? { dataset: { toggle: 'toolbarCollapsed' } } : null) },
+});
+check('the settings switch expands the toolbar',
+  await waitFor(() => app.getPrefs().toolbarCollapsed === false));
+check('the handle follows the settings change', barEl().classList.contains('is-collapsed') === false);
+
 /* ── Bookmarks view ────────────────────────────────────────────────────── */
 
 location.hash = '#/markah';
